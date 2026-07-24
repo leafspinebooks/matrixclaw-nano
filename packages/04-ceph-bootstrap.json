@@ -14,14 +14,14 @@
     {
       "id": "cephadm-prereqs",
       "title": "Cephadm prereqs",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q podman lvm2",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q podman lvm2",
       "mutates": true,
       "already": "dpkg -s podman 2>/dev/null | grep -q ok.installed && dpkg -s lvm2 2>/dev/null | grep -q ok.installed"
     },
     {
       "id": "cephadm-package",
       "title": "Cephadm package",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q cephadm",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q cephadm",
       "mutates": true,
       "already": "command -v cephadm >/dev/null 2>&1"
     },

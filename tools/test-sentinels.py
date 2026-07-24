@@ -95,7 +95,7 @@ def test_shipped_packages():
     print("\nthe shipped packages — read from packages/, not invented here")
 
     names = sorted(f[:-5] for f in os.listdir(PKG_DIR) if f.endswith(".json"))
-    check("all twelve packages are present", len(names) == 12,
+    check("all thirteen packages are present", len(names) == 13,
           "found %d: %s" % (len(names), ", ".join(names)))
 
     exc = raises(packages.resolve, packages.load("03-virtual-machines"))

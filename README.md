@@ -82,9 +82,44 @@ build, not estimated, which is why preflight's floors are 30 GiB and 200 GB.
 ./bin/mcnano plan 01-platform-host       # the first build phase
 ./bin/mcnano records                     # what has run on this machine
 ./bin/mcnano report <record-id>          # the report for a run
+./bin/mc-place-secrets                   # place your lab secrets (see below)
 ```
 
 `plan` is always safe and always the right place to start: it runs nothing at all.
+
+### The whole build, in order
+
+Run these from the clone, on your lab host, reading each plan before you approve it.
+There is exactly one manual step in the middle -- placing your secrets -- and one
+value you supply, your SSH public key for package 03.
+
+```bash
+./bin/mcnano run preflight-laptop32                                    # can this machine host the lab?
+./bin/mcnano run 01-platform-host                                      # the platform host
+./bin/mcnano run 02-networks                                           # the five networks
+./bin/mcnano run 03-virtual-machines --set "deployer_pubkey=$(cat ~/.ssh/id_ed25519.pub)"   # the seven VMs
+./bin/mcnano run 04-ceph-bootstrap                                     # Ceph, first node
+./bin/mcnano run 05-ceph-cluster                                       # Ceph, full cluster
+./bin/mcnano run 06-secondary-storage                                  # NFS secondary storage
+
+# --- place your secrets now: after the storage cluster exists, before package 07 ---
+cp mc-secrets.env.example mc-secrets.env    # then fill in three passwords and save
+./bin/mc-place-secrets                       # places them on the three hosts
+
+./bin/mcnano run 07-management-server                                  # MySQL + CloudStack
+./bin/mcnano run 08-compute-host-1                                     # kvm-01
+./bin/mcnano run 09-compute-host-2                                     # kvm-02
+./bin/mcnano run 10-manchester-zone                                    # the zone
+./bin/mcnano run 11-first-guest                                        # the first guest
+```
+
+The secrets step sits **after package 05**, not merely after 03: `mc-place-secrets`
+reads the Ceph storage key from the cluster that package 05 builds, so the cluster has
+to exist first. Placing it here -- after 06, before 07 -- satisfies both that and the
+rule that the secrets must outlive package 03's rebuild of the VMs.
+
+Note the quotes around `deployer_pubkey=...`: an SSH public key contains spaces, and
+without the quotes your shell splits it and the command fails.
 
 One value has no default and cannot have one - your SSH public key, which package 03
 puts on the seven machines it builds:

@@ -33,7 +33,7 @@
     {
       "id": "kvm-libvirt-stack",
       "title": "Kvm libvirt stack",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils libguestfs-tools cloud-image-utils chrony && sudo systemctl enable --now chrony && sudo usermod -aG libvirt,kvm $USER",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils libguestfs-tools cloud-image-utils chrony && sudo systemctl enable --now chrony && sudo usermod -aG libvirt,kvm $USER",
       "mutates": true,
       "already": "dpkg -s virtinst 2>/dev/null | grep -q ok.installed && dpkg -s cloud-image-utils 2>/dev/null | grep -q ok.installed && id -nG $USER | grep -qw libvirt && id -nG $USER | grep -qw kvm"
     },

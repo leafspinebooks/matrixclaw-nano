@@ -14,7 +14,7 @@
     {
       "id": "apt-nfs-server",
       "title": "Apt nfs server",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q nfs-kernel-server chrony && sudo systemctl enable --now chrony",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q nfs-kernel-server chrony && sudo systemctl enable --now chrony",
       "mutates": true,
       "already": "dpkg -s nfs-kernel-server 2>/dev/null | grep -q ok.installed"
     },

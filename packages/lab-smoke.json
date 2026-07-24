@@ -1,0 +1,168 @@
+{
+  "name": "lab-smoke",
+  "title": "Acceptance: the reader lab's 24-checkpoint Done-When",
+  "description": "Prove the built estate against the book's Done-When, read-only throughout, run from the platform host and reaching the estate over Nano's transport. Twenty-four checks covering nested virtualisation, the platform, the five networks and jumbo pair, seven VMs answering, the management UI serving, Ceph HEALTH_OK with three mons and six OSDs and the scoped client, the secondary export, both compute hosts, and the zone's observable state -- enabled, system VMs running, two hosts up, a template ready, and a guest whose root volume is genuinely on the production Ceph pool -- plus the snapshot floor. Derived from the framework's proven lab-smoke scenario. On a 32 GB machine live migration (cp15) is excluded by design. Nothing here changes anything.",
+  "target_host": "lab-host",
+  "checks": [
+    {
+      "id": "cp01-nested-virt-enabled",
+      "run": "grep -qE '[Y1]' /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null && echo NESTED-OK",
+      "expect_output": "NESTED-OK",
+      "why": "The page-one gate: nested virtualisation is on."
+    },
+    {
+      "id": "cp02-phase1-platform",
+      "run": "sg libvirt -c 'export LIBVIRT_DEFAULT_URI=qemu:///system; systemctl is-active --quiet libvirtd && id -nG | grep -qw libvirt && virsh pool-list | grep -q \"lab .*active\" && virsh pool-list | grep -q \"iso .*active\" && test -f /data/iso/noble-server-cloudimg-amd64.img && test -f ~/.ssh/id_ed25519.pub && echo PHASE1-OK'",
+      "expect_output": "PHASE1-OK",
+      "why": "Platform host: libvirt up, the reader in its group, both pools active, cloud image and key present."
+    },
+    {
+      "id": "cp03-five-networks-active",
+      "run": "sg libvirt -c 'export LIBVIRT_DEFAULT_URI=qemu:///system; for n in lab-mgmt lab-storage-fe lab-storage-be lab-guest lab-public; do virsh net-list | grep -q \"$n .*active\" || exit 1; done && echo NETWORKS-OK'",
+      "expect_output": "NETWORKS-OK",
+      "why": "All five libvirt networks are active."
+    },
+    {
+      "id": "cp03-storage-bridges-mtu-9000",
+      "run": "ip link show br-lab-stgfe | grep -q 'mtu 9000' && ip link show br-lab-stgbe | grep -q 'mtu 9000' && echo MTU9000-OK",
+      "expect_output": "MTU9000-OK",
+      "why": "The storage pair carries jumbo frames."
+    },
+    {
+      "id": "cp04-estate-hostnames",
+      "run": "for ip in 11 21 22 23 31 32 41; do ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new labadmin@10.100.99.$ip hostname; done | tr '\\n' ' '",
+      "expect_output": "mgmt-01 ceph-01 ceph-02 ceph-03 kvm-01 kvm-02 nfs-01",
+      "why": "All seven VMs answer SSH with the right hostnames."
+    },
+    {
+      "id": "cp06-mgmt-ui-answers",
+      "run": "test \"$(curl -s -o /dev/null -w '%{http_code}' http://10.100.99.11:8080/client/)\" = \"200\" && echo UI-200-OK",
+      "expect_output": "UI-200-OK",
+      "why": "The management server is serving (503 fails this)."
+    },
+    {
+      "id": "cp05-jumbo-frame-proof",
+      "run": "ping -M do -s 8972 -c 3 10.200.99.22 -I 10.200.99.21 >/dev/null && echo JUMBO-OK",
+      "expect_output": "JUMBO-OK",
+      "why": "A 9000-byte frame crosses the storage network unfragmented.",
+      "target_host": "ceph-01"
+    },
+    {
+      "id": "cp07-ceph-health-ok",
+      "run": "sudo cephadm shell -- ceph health",
+      "expect_output": "HEALTH_OK",
+      "why": "Ceph reports HEALTH_OK.",
+      "target_host": "ceph-01"
+    },
+    {
+      "id": "cp07-three-mons-quorum",
+      "run": "test \"$(sudo cephadm shell -- ceph -s 2>/dev/null | sed -n 's/.*quorum \\([^ ]*\\).*/\\1/p' | tr ',' '\\n' | grep -c .)\" -eq 3 && echo QUORUM-3-OK",
+      "expect_output": "QUORUM-3-OK",
+      "why": "Three monitors in quorum (counted).",
+      "target_host": "ceph-01"
+    },
+    {
+      "id": "cp07-six-osds-up-in",
+      "run": "test \"$(sudo cephadm shell -- ceph osd stat 2>/dev/null | sed -n 's/.*: \\([0-9][0-9]*\\) up.*/\\1/p')\" -eq 6 && echo OSDS-6-UP-OK",
+      "expect_output": "OSDS-6-UP-OK",
+      "why": "Exactly six OSDs up and in.",
+      "target_host": "ceph-01"
+    },
+    {
+      "id": "cp07-pools-initialised",
+      "run": "test \"$(sudo cephadm shell -- ceph osd pool ls 2>/dev/null | grep -c 'rbd-')\" -eq 2 && echo POOLS-2-OK",
+      "expect_output": "POOLS-2-OK",
+      "why": "Both RBD pools exist.",
+      "target_host": "ceph-01"
+    },
+    {
+      "id": "cp07-scoped-client-exists",
+      "run": "sudo cephadm shell -- ceph auth get client.cloudstack >/dev/null 2>&1 && echo CEPHX-OK",
+      "expect_output": "CEPHX-OK",
+      "why": "The scoped client.cloudstack key exists.",
+      "target_host": "ceph-01"
+    },
+    {
+      "id": "cp07-rbd-answers",
+      "run": "sudo cephadm shell -- rbd ls rbd-dev >/dev/null 2>&1 && echo RBD-OK",
+      "expect_output": "RBD-OK",
+      "why": "RBD answers on the dev pool.",
+      "target_host": "ceph-01"
+    },
+    {
+      "id": "cp08-secondary-export",
+      "run": "showmount -e localhost 2>/dev/null | awk '{print $1}' | grep -qx '/export/secondary' && echo SECONDARY-EXPORT-OK",
+      "expect_output": "SECONDARY-EXPORT-OK",
+      "why": "The NFS secondary export is present.",
+      "target_host": "nfs-01"
+    },
+    {
+      "id": "cp09-kvm-01-prepared",
+      "run": "egrep -q '(vmx|svm)' /proc/cpuinfo && test -e /dev/kvm && ip link show cloudbr0 >/dev/null && ip link show cloudbr1 >/dev/null && ip link show cloudbr2 >/dev/null && dpkg -s cloudstack-agent 2>/dev/null | grep -q ok.installed && dpkg -s qemu-block-extra 2>/dev/null | grep -q ok.installed && dpkg -s ceph-common 2>/dev/null | grep -q ok.installed && ping -c2 10.100.99.11 >/dev/null && ping -M do -s 8972 -c2 10.200.99.21 >/dev/null && echo KVM01-READY",
+      "expect_output": "KVM01-READY",
+      "why": "kvm-01: virt, /dev/kvm, three cloud bridges, agent+Ceph packages, both networks incl. jumbo.",
+      "target_host": "kvm-01"
+    },
+    {
+      "id": "cp09-kvm-02-prepared",
+      "run": "egrep -q '(vmx|svm)' /proc/cpuinfo && test -e /dev/kvm && ip link show cloudbr0 >/dev/null && ip link show cloudbr1 >/dev/null && ip link show cloudbr2 >/dev/null && dpkg -s cloudstack-agent 2>/dev/null | grep -q ok.installed && dpkg -s qemu-block-extra 2>/dev/null | grep -q ok.installed && dpkg -s ceph-common 2>/dev/null | grep -q ok.installed && ping -c2 10.100.99.11 >/dev/null && ping -M do -s 8972 -c2 10.200.99.21 >/dev/null && echo KVM02-READY",
+      "expect_output": "KVM02-READY",
+      "why": "kvm-02: the same; two compute hosts always.",
+      "target_host": "kvm-02"
+    },
+    {
+      "id": "cp10-zone-manchester-enabled",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"SELECT CONCAT(name,\\\" \\\",allocation_state) FROM cloud.data_center WHERE name=\\\"Manchester\\\" AND removed IS NULL\"'",
+      "expect_output": "Manchester Enabled",
+      "why": "The Manchester zone exists and is enabled.",
+      "target_host": "mgmt-01"
+    },
+    {
+      "id": "cp11-system-vms-running",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"SELECT COUNT(*) FROM cloud.vm_instance WHERE type IN (\\\"SecondaryStorageVm\\\",\\\"ConsoleProxy\\\") AND state=\\\"Running\\\" AND removed IS NULL\"' | grep -qx 2 && echo SYSVMS-2-OK",
+      "expect_output": "SYSVMS-2-OK",
+      "why": "Both system VMs are Running.",
+      "target_host": "mgmt-01"
+    },
+    {
+      "id": "cp12-two-hosts-up",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"SELECT COUNT(*) FROM cloud.host WHERE type=\\\"Routing\\\" AND status=\\\"Up\\\" AND removed IS NULL\"' | grep -qx 2 && echo HOSTS-2-OK",
+      "expect_output": "HOSTS-2-OK",
+      "why": "Both compute hosts are Up in CloudStack.",
+      "target_host": "mgmt-01"
+    },
+    {
+      "id": "cp13-template-ready",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"SELECT COUNT(*) FROM cloud.template_store_ref WHERE download_state=\\\"DOWNLOADED\\\" AND destroyed=0\"' | awk '$1>=1{print \"TEMPLATE-READY\"}'",
+      "expect_output": "TEMPLATE-READY",
+      "why": "At least one template has finished downloading.",
+      "target_host": "mgmt-01"
+    },
+    {
+      "id": "cp14-guest-running",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"SELECT COUNT(*) FROM cloud.vm_instance WHERE type=\\\"User\\\" AND state=\\\"Running\\\" AND removed IS NULL\"' | awk '$1>=1{print \"GUEST-RUNNING\"}'",
+      "expect_output": "GUEST-RUNNING",
+      "why": "A user guest is Running.",
+      "target_host": "mgmt-01"
+    },
+    {
+      "id": "cp14-volume-on-rbd-prod",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"SELECT COUNT(*) FROM cloud.volumes v JOIN cloud.vm_instance i ON v.instance_id=i.id JOIN cloud.storage_pool p ON v.pool_id=p.id WHERE i.type=\\\"User\\\" AND i.removed IS NULL AND v.removed IS NULL AND v.state=\\\"Ready\\\" AND p.name=\\\"rbd-prod\\\"\"' | awk '$1>=1{print \"GUEST-VOLUME-ON-RBD-PROD\"}'",
+      "expect_output": "GUEST-VOLUME-ON-RBD-PROD",
+      "why": "The guest's own root volume is on the production Ceph pool.",
+      "target_host": "mgmt-01"
+    },
+    {
+      "id": "cp17-snapshot-tooling",
+      "run": "test -x ~/lab-snapshot.sh && test -x ~/lab-revert.sh && echo SNAPSHOT-TOOLING-OK",
+      "expect_output": "SNAPSHOT-TOOLING-OK",
+      "why": "The snapshot and revert scripts are installed."
+    },
+    {
+      "id": "cp17-baseline-snapshot-exists",
+      "run": "sg libvirt -c 'export LIBVIRT_DEFAULT_URI=qemu:///system; virsh snapshot-list --name mgmt-01 2>/dev/null | grep -q . && echo SNAPSHOT-EXISTS'",
+      "expect_output": "SNAPSHOT-EXISTS",
+      "why": "A baseline snapshot exists -- the drill has been run at least once."
+    }
+  ]
+}

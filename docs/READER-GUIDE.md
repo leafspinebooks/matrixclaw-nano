@@ -239,9 +239,12 @@ over SSH, on the far side of the connection. **A secret never enters a package, 
 a record, or Nano itself** -- which is deliberate, and is why placing them is a separate
 step you run, not something Nano does for you.
 
-The timing matters. The VMs are rebuilt from a fresh image by package 03, so any secrets
-you placed earlier are gone with the old disks. Place them **after package 03 and before
-packages 07, 08, 09, and 10** -- which is to say, now.
+The timing matters, and there are two constraints. The VMs are rebuilt from a fresh
+image by package 03, so any secrets placed earlier are gone with the old disks -- place
+them **after package 03**. And `mc-place-secrets` reads the Ceph storage key from the
+cluster that **package 05** builds, so place them after that too. In practice the
+natural spot is **after package 06 and before package 07**: run 01 through 06, place
+the secrets, then carry on from 07.
 
 **The easy way.** Nano ships a small helper that places all of them from one file. Copy
 the template, fill in three passwords, and run it:
@@ -386,16 +389,28 @@ deliberately.
 
 ## Acceptance: proving the lab with lab-smoke
 
-The build is done when the lab passes its 24-checkpoint acceptance suite, `lab-smoke`.
-Each checkpoint is a read-only command judged on an exact marker in its output, so a
-check cannot pass on its own error text. The suite proves, among other things: nested
+The build is done when the lab passes its 24-checkpoint acceptance suite, `lab-smoke`
+-- and Nano ships it as a package you run, the same way you ran the build:
+
+```
+bin/mcnano run lab-smoke
+```
+
+It is read-only from end to end: twenty-four checks, each judged on an exact marker in
+its output, so a check cannot pass on its own error text. It reaches the estate over
+the same transport the build used. The suite proves, among other things: nested
 virtualisation, the five networks and the jumbo path, seven VMs answering with the right
 hostnames, the management UI, Ceph healthy with three monitors and six OSDs, the secondary
 export, both compute hosts prepared, the zone enabled with its system VMs and both hosts
 up, the template ready, and the first guest running with its volume genuinely on the
 production Ceph pool.
 
-In the validating build, `lab-smoke` passed **24 of 24**.
+One checkpoint depends on you having run the snapshot drill at least once
+(`cp17-baseline-snapshot-exists`): until you have, `lab-smoke` reports **23 of 24**,
+and that is honest rather than a failure -- run the drill (see "The snapshot drill"
+above), restart your guest afterwards, and re-run `lab-smoke` for the full **24 of 24**.
+
+In the validating build on a fresh Dell Latitude 9330, `lab-smoke` passed **24 of 24**.
 
 ## How long it takes
 
@@ -451,6 +466,26 @@ not-applicable rather than passed.
   Nano will not substitute a value it knows cannot work. Re-run it with
   `--set deployer_pubkey="$(cat ~/.ssh/id_ed25519.pub)"` (see "The one value you have
   to supply").
+
+- **A package fails on an `apt` step with "Could not get lock ... held by
+  unattended-upgr" (exit 100).** This is a timing collision, not a fault in the build.
+  A freshly installed Ubuntu runs *unattended-upgrades* -- its automatic security
+  updater -- on a timer for the first while after boot, and that process holds the
+  package-manager lock for a few minutes. If one of Nano's `apt` steps happens to land
+  in that window, it cannot get the lock and stops.
+
+  The packages already ask `apt` to **wait** up to five minutes for the lock, so this
+  is uncommon; but a slow first-boot upgrade can outlast the wait. If it happens, it is
+  harmless and the fix is simple: give it a minute and **re-run the same package**.
+  Steps are idempotent, so the parts that already succeeded are skipped and it picks up
+  where it stopped. You can watch the updater finish with:
+
+  ```
+  ssh labadmin@<the host that failed> 'pgrep -a unattended-upgr || echo done'
+  ```
+
+  When that prints `done`, the lock is free. This is more likely on the compute hosts
+  (packages 08 and 09), which install the most packages soon after the VMs first boot.
 
 - **A package fails at its first step with a secrets error.** The secret it needs is
   missing or empty on the target host, or was placed before package 03 rebuilt the VMs.

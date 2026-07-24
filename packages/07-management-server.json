@@ -23,14 +23,14 @@
     {
       "id": "apt-baseline",
       "title": "Apt baseline",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q chrony gnupg wget nfs-common && sudo systemctl enable --now chrony",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q chrony gnupg wget nfs-common && sudo systemctl enable --now chrony",
       "mutates": true,
       "already": "systemctl is-active chrony >/dev/null 2>&1 && dpkg -s nfs-common 2>/dev/null | grep -q ok.installed"
     },
     {
       "id": "mysql-server",
       "title": "Mysql server",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q mysql-server",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q mysql-server",
       "mutates": true,
       "already": "systemctl is-active mysql >/dev/null 2>&1"
     },
@@ -51,14 +51,14 @@
     {
       "id": "cloudstack-apt-repo",
       "title": "Cloudstack apt repo",
-      "run": "sudo mkdir -p /etc/apt/keyrings && wget -qO- https://download.cloudstack.org/release.asc | sudo gpg --dearmor -o /etc/apt/keyrings/cloudstack.gpg && echo \"deb [signed-by=/etc/apt/keyrings/cloudstack.gpg] https://download.cloudstack.org/ubuntu $(lsb_release -cs) 4.22\" | sudo tee /etc/apt/sources.list.d/cloudstack.list && sudo apt-get update -q",
+      "run": "sudo mkdir -p /etc/apt/keyrings && wget -qO- https://download.cloudstack.org/release.asc | sudo gpg --dearmor -o /etc/apt/keyrings/cloudstack.gpg && echo \"deb [signed-by=/etc/apt/keyrings/cloudstack.gpg] https://download.cloudstack.org/ubuntu $(lsb_release -cs) 4.22\" | sudo tee /etc/apt/sources.list.d/cloudstack.list && sudo apt-get -o DPkg::Lock::Timeout=300 update -q",
       "mutates": true,
       "already": "test -f /etc/apt/sources.list.d/cloudstack.list"
     },
     {
       "id": "cloudstack-management-package",
       "title": "Cloudstack management package",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q cloudstack-management",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q cloudstack-management",
       "mutates": true,
       "already": "dpkg -s cloudstack-management 2>/dev/null | grep -q ok.installed"
     },
