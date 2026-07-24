@@ -1,0 +1,135 @@
+{
+  "name": "09-compute-host-2",
+  "title": "The second compute host",
+  "order": 9,
+  "profile": "laptop32",
+  "target_host": "kvm-02",
+  "description": "Take kvm-02 from cloud-init Ubuntu to a CloudStack-ready nested hypervisor: verify the nested-virtualisation chain held, hand netplan ownership from cloud-init to the three-bridge CloudStack layout (cloudbr0 management on this host's own per-host address, cloudbr1 guest trunk, cloudbr2 public, storage NIC left plain for jumbo librbd traffic), install the 4.22 agent with the Ceph-profile QEMU RBD driver, and prepare the lab-only root-SSH handshake for the UI wizard host-add route.",
+  "source": "Generated from runbooks/lab/lab-kvm-02.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {
+    "mgmt_ip": "10.100.99.32",
+    "stg_ip": "10.200.99.32"
+  },
+  "steps": [
+    {
+      "id": "secrets-file-present",
+      "title": "Secrets file present",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && test -n \"$MC_KVM_ROOT_PASS\"' && test \"$(sudo stat -c %a /root/.mc-secrets.env)\" = 600 && echo SECRETS-PRESENT-OK",
+      "mutates": false,
+      "advice": "This phase needs /root/.mc-secrets.env on this host, mode 600, owned by root.\nIt is not in the repository and never will be: it holds passwords, and neither\na package nor a run record is a place for those.\n\nCreate it yourself on the target host, with values of your own choosing:\n\n    sudo install -m 600 /dev/null /root/.mc-secrets.env\n    sudo tee /root/.mc-secrets.env >/dev/null <<'ENV'\n    MC_KVM_ROOT_PASS='<the same password you set on kvm-01>'\n    ENV\n\nThis phase needs: MC_KVM_ROOT_PASS - each one non-empty.\n\nBeware quoting. A value containing an apostrophe will terminate its own\nsingle-quoted string and silently swallow the following line, leaving\nevery variable empty while the file still looks fine. Alphanumeric\nvalues avoid the problem entirely.\n\nThen run this phase again. Nothing has been changed on this host."
+    },
+    {
+      "id": "apt-baseline",
+      "title": "Apt baseline",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q chrony gnupg wget bridge-utils && sudo systemctl enable --now chrony",
+      "mutates": true,
+      "already": "systemctl is-active chrony >/dev/null 2>&1 && dpkg -s bridge-utils 2>/dev/null | grep -q ok.installed"
+    },
+    {
+      "id": "verify-nested-chain",
+      "title": "Verify nested chain",
+      "run": "test \"$(egrep -c '(vmx|svm)' /proc/cpuinfo)\" -ge 1 && test -e /dev/kvm && echo NESTED-CHAIN-OK || (echo 'FATAL: vmx/svm or /dev/kvm missing in the nested VM - fix lab-host nesting and the Phase 3 host-passthrough, then re-plan' && exit 1)",
+      "mutates": false,
+      "already": "test -e /dev/kvm"
+    },
+    {
+      "id": "disable-cloudinit-network",
+      "title": "Disable cloudinit network",
+      "run": "sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg > /dev/null << 'EOF'\nnetwork: {config: disabled}\nEOF\necho CLOUDINIT-NET-DISABLED",
+      "mutates": true,
+      "already": "test -f /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"
+    },
+    {
+      "id": "cloudbr-netplan",
+      "title": "Cloudbr netplan",
+      "run": "sudo tee /etc/netplan/60-cloudstack.yaml > /dev/null << 'EOF'\nnetwork:\n  version: 2\n  ethernets:\n    enp1s0: {}\n    enp2s0:\n      addresses: [{{stg_ip}}/24]\n      mtu: 9000\n    enp3s0: {}\n    enp4s0: {}\n  bridges:\n    cloudbr0:\n      interfaces: [enp1s0]\n      addresses: [{{mgmt_ip}}/24]\n      routes: [{to: default, via: 10.100.99.1}]\n      nameservers: {addresses: [1.1.1.1, 8.8.8.8]}\n    cloudbr1:\n      interfaces: [enp3s0]\n    cloudbr2:\n      interfaces: [enp4s0]\nEOF\nsudo chmod 600 /etc/netplan/60-cloudstack.yaml\nsudo rm -f /etc/netplan/50-cloud-init.yaml\nsudo netplan apply",
+      "mutates": true,
+      "already": "ip link show cloudbr0 >/dev/null 2>&1"
+    },
+    {
+      "id": "cloudstack-apt-repo",
+      "title": "Cloudstack apt repo",
+      "run": "sudo mkdir -p /etc/apt/keyrings && wget -qO- https://download.cloudstack.org/release.asc | sudo gpg --dearmor -o /etc/apt/keyrings/cloudstack.gpg && echo \"deb [signed-by=/etc/apt/keyrings/cloudstack.gpg] https://download.cloudstack.org/ubuntu $(lsb_release -cs) 4.22\" | sudo tee /etc/apt/sources.list.d/cloudstack.list && sudo apt-get update -q",
+      "mutates": true,
+      "already": "test -f /etc/apt/sources.list.d/cloudstack.list"
+    },
+    {
+      "id": "agent-and-ceph-packages",
+      "title": "Agent and ceph packages",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q cloudstack-agent qemu-block-extra ceph-common",
+      "mutates": true,
+      "already": "dpkg -s cloudstack-agent 2>/dev/null | grep -q ok.installed && dpkg -s qemu-block-extra 2>/dev/null | grep -q ok.installed && dpkg -s ceph-common 2>/dev/null | grep -q ok.installed"
+    },
+    {
+      "id": "root-password-for-host-add",
+      "title": "Root password for host add",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && echo \"root:$MC_KVM_ROOT_PASS\" | chpasswd' && echo ROOT-PASSWORD-SET",
+      "mutates": true,
+      "already": "sudo passwd -S root 2>/dev/null | grep -q '^root P'"
+    },
+    {
+      "id": "permit-root-login-labonly",
+      "title": "Permit root login labonly",
+      "run": "echo 'PermitRootLogin yes' | sudo tee /etc/ssh/sshd_config.d/60-cloudstack-lab.conf && sudo systemctl restart ssh",
+      "mutates": true,
+      "already": "test -f /etc/ssh/sshd_config.d/60-cloudstack-lab.conf"
+    }
+  ],
+  "checks": [
+    {
+      "id": "nested-chain-ok",
+      "title": "Nested chain ok",
+      "run": "test \"$(egrep -c '(vmx|svm)' /proc/cpuinfo)\" -ge 1 && test -e /dev/kvm && echo KVM-OK",
+      "expect_output": "KVM-OK"
+    },
+    {
+      "id": "cloudbr0-carries-mgmt-ip",
+      "title": "Cloudbr0 carries mgmt ip",
+      "run": "ip -br addr show cloudbr0 | grep -o '{{mgmt_ip}}'",
+      "expect_output": "10.100.99.32"
+    },
+    {
+      "id": "cloudbr1-up",
+      "title": "Cloudbr1 up",
+      "run": "ip -br link show cloudbr1 | grep -o cloudbr1",
+      "expect_output": "cloudbr1"
+    },
+    {
+      "id": "cloudbr2-up",
+      "title": "Cloudbr2 up",
+      "run": "ip -br link show cloudbr2 | grep -o cloudbr2",
+      "expect_output": "cloudbr2"
+    },
+    {
+      "id": "mgmt-server-reachable",
+      "title": "Mgmt server reachable",
+      "run": "ping -c2 10.100.99.11 >/dev/null && echo MGMT-REACHABLE",
+      "expect_output": "MGMT-REACHABLE"
+    },
+    {
+      "id": "jumbo-path-to-ceph",
+      "title": "Jumbo path to ceph",
+      "run": "ping -M do -s 8972 -c2 10.200.99.21 >/dev/null && echo JUMBO-TO-CEPH-OK",
+      "expect_output": "JUMBO-TO-CEPH-OK"
+    },
+    {
+      "id": "agent-package-installed",
+      "title": "Agent package installed",
+      "run": "dpkg -s cloudstack-agent 2>/dev/null | grep -q ok.installed && echo cloudstack-agent",
+      "expect_output": "cloudstack-agent"
+    },
+    {
+      "id": "rbd-driver-present",
+      "title": "Rbd driver present",
+      "run": "dpkg -s qemu-block-extra 2>/dev/null | grep -q ok.installed && dpkg -s ceph-common 2>/dev/null | grep -q ok.installed && echo CEPH-PROFILE-PACKAGES-OK",
+      "expect_output": "CEPH-PROFILE-PACKAGES-OK"
+    },
+    {
+      "id": "still-reachable-post-bridge",
+      "title": "Still reachable post bridge",
+      "run": "echo SSH-ALIVE",
+      "expect_output": "SSH-ALIVE"
+    }
+  ]
+}

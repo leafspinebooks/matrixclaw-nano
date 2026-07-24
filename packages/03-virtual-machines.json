@@ -1,0 +1,80 @@
+{
+  "name": "03-virtual-machines",
+  "title": "The seven virtual machines",
+  "order": 3,
+  "profile": "laptop32",
+  "target_host": "lab-host",
+  "description": "Provision the seven-VM estate on the physical host from the noble cloud image: per-VM qcow2 disks, cloud-init seeds carrying identity + the lab SSH key + the fixed .99 static addressing, OSD data disks for the three Ceph nodes, virt-install with host-passthrough, then wait for first boots, push estate name resolution to every VM, and prove SSH, hostnames and the jumbo-frame path.",
+  "source": "Generated from runbooks/lab/lab-vms.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {
+    "ceph_ram": 4096,
+    "ceph_vcpus": 2,
+    "deployer_pubkey": "REPLACE-WITH-YOUR-OWN-SSH-PUBLIC-KEY",
+    "kvm_ram": 4096,
+    "kvm_vcpus": 4,
+    "mgmt_ram": 7168,
+    "mgmt_vcpus": 4,
+    "nfs_ram": 2048,
+    "nfs_vcpus": 1
+  },
+  "steps": [
+    {
+      "id": "clear-stale-host-keys",
+      "title": "Clear stale host keys",
+      "run": "for ip in 11 21 22 23 31 32 41; do ssh-keygen -R 10.100.99.$ip >/dev/null 2>&1 || true; done && echo HOST-KEYS-CLEARED",
+      "mutates": true,
+      "already": "test -z \"$(for ip in 11 21 22 23 31 32 41; do ssh-keygen -F 10.100.99.$ip 2>/dev/null; done)\""
+    },
+    {
+      "id": "write-build-script",
+      "title": "Write build script",
+      "run": "tee ~/build-lab-vms.sh > /dev/null << 'OUTER'\n#!/usr/bin/env bash\nset -euo pipefail\nexport LIBVIRT_DEFAULT_URI=qemu:///system\n\nBASE=/data/iso/noble-server-cloudimg-amd64.img\nDIR=/data/lab\nPUBKEY=$(cat ~/.ssh/id_ed25519.pub)\n\n# name        vcpus ram(MB) disk(GB) osd_disks networks (in NIC order)\nPLAN=\"\nmgmt-01      {{mgmt_vcpus}}  {{mgmt_ram}} 100 0 lab-mgmt\nceph-01      {{ceph_vcpus}}  {{ceph_ram}}  40 2 lab-mgmt,lab-storage-fe,lab-storage-be\nceph-02      {{ceph_vcpus}}  {{ceph_ram}}  40 2 lab-mgmt,lab-storage-fe,lab-storage-be\nceph-03      {{ceph_vcpus}}  {{ceph_ram}}  40 2 lab-mgmt,lab-storage-fe,lab-storage-be\nkvm-01       {{kvm_vcpus}}  {{kvm_ram}} 100 0 lab-mgmt,lab-storage-fe,lab-guest,lab-public\nkvm-02       {{kvm_vcpus}}  {{kvm_ram}} 100 0 lab-mgmt,lab-storage-fe,lab-guest,lab-public\nnfs-01       {{nfs_vcpus}}  {{nfs_ram}} 200 0 lab-mgmt\n\"\n\nip_suffix() {  # last octet per VM name\n  case $1 in\n    mgmt-01) echo 11;; ceph-01) echo 21;; ceph-02) echo 22;; ceph-03) echo 23;;\n    kvm-01)  echo 31;; kvm-02)  echo 32;; nfs-01)  echo 41;;\n  esac\n}\n\necho \"$PLAN\" | while read -r NAME VCPUS RAM DISK OSDS NETS; do\n  [ -z \"${NAME:-}\" ] && continue\n  N=$(ip_suffix \"$NAME\")\n  echo \"=== Building ${NAME} (10.100.99.${N}) ===\"\n\n  # Disk: full copy of the base image, resized (cloud-init grows the fs)\n  qemu-img convert -O qcow2 \"$BASE\" \"$DIR/${NAME}.qcow2\"\n  qemu-img resize \"$DIR/${NAME}.qcow2\" \"${DISK}G\"\n\n  # cloud-init seed\n  WORK=$(mktemp -d)\n  printf 'instance-id: %s\\nlocal-hostname: %s\\n' \"$NAME\" \"$NAME\" > \"$WORK/meta-data\"\n\n  cat > \"$WORK/user-data\" << UD\n#cloud-config\nusers:\n  - name: labadmin\n    shell: /bin/bash\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    ssh_authorized_keys:\n      - ${PUBKEY}\n      - {{deployer_pubkey}}\nssh_pwauth: true\npackage_update: true\npackages: [qemu-guest-agent, chrony]\nruncmd:\n  - systemctl enable --now qemu-guest-agent\nUD\n\n  # Static addressing, per-interface, in NIC order\n  {\n    echo \"version: 2\"\n    echo \"ethernets:\"\n    echo \"  enp1s0:\"\n    echo \"    addresses: [10.100.99.${N}/24]\"\n    echo \"    routes: [{to: default, via: 10.100.99.1}]\"\n    echo \"    nameservers: {addresses: [1.1.1.1, 8.8.8.8]}\"\n    if [[ \"$NETS\" == *lab-storage-fe* ]]; then\n      echo \"  enp2s0:\"\n      echo \"    addresses: [10.200.99.${N}/24]\"\n      echo \"    mtu: 9000\"\n    fi\n    if [[ \"$NETS\" == *lab-storage-be* ]]; then\n      echo \"  enp3s0:\"\n      echo \"    addresses: [10.201.99.${N}/24]\"\n      echo \"    mtu: 9000\"\n    fi\n  } > \"$WORK/network-config\"\n\n  cloud-localds --network-config=\"$WORK/network-config\" \\\n      \"$DIR/${NAME}-seed.iso\" \"$WORK/user-data\" \"$WORK/meta-data\"\n  rm -rf \"$WORK\"\n\n  # OSD data disks for the Ceph nodes\n  DISK_ARGS=()\n  for i in $(seq 1 \"$OSDS\"); do\n    qemu-img create -f qcow2 \"$DIR/${NAME}-osd${i}.qcow2\" 50G\n    DISK_ARGS+=(--disk \"path=$DIR/${NAME}-osd${i}.qcow2,format=qcow2,bus=virtio\")\n  done\n\n  NET_ARGS=()\n  IFS=',' read -ra NLIST <<< \"$NETS\"\n  for net in \"${NLIST[@]}\"; do NET_ARGS+=(--network \"network=${net},model=virtio\"); done\n\n  virt-install --name \"$NAME\" --memory \"$RAM\" --vcpus \"$VCPUS\" \\\n    --cpu host-passthrough \\\n    --disk \"path=$DIR/${NAME}.qcow2,format=qcow2,bus=virtio\" \\\n    \"${DISK_ARGS[@]}\" \\\n    --disk \"path=$DIR/${NAME}-seed.iso,device=cdrom\" \\\n    \"${NET_ARGS[@]}\" \\\n    --osinfo ubuntu24.04 --import --graphics none \\\n    --noautoconsole --autostart\ndone\n\necho; echo \"All seven VMs defined and booting:\"; virsh list\nOUTER\nchmod +x ~/build-lab-vms.sh",
+      "mutates": true,
+      "already": "test -x ~/build-lab-vms.sh && grep -q 'mgmt-01      {{mgmt_vcpus}}  {{mgmt_ram}}' ~/build-lab-vms.sh"
+    },
+    {
+      "id": "build-estate",
+      "title": "Build estate",
+      "run": "~/build-lab-vms.sh",
+      "mutates": true,
+      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; test \"$(virsh list --all --name | grep -cE '^(mgmt-01|ceph-0[123]|kvm-0[12]|nfs-01)$')\" -eq 7",
+      "destructive": true,
+      "destroys": "the disks of all seven estate virtual machines, overwriting each from the base cloud image. Everything inside them is lost. There is no undo and Nano takes no backup."
+    },
+    {
+      "id": "wait-first-boot",
+      "title": "Wait first boot",
+      "run": "ok=0\nfor i in $(seq 1 60); do\n  ok=1\n  for ip in 11 21 22 23 31 32 41; do\n    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \\\n        labadmin@10.100.99.$ip true 2>/dev/null || ok=0\n  done\n  [ $ok -eq 1 ] && break\n  sleep 10\ndone\n[ $ok -eq 1 ] && echo ESTATE-UP || { echo 'FATAL: not all seven VMs answered SSH within 10 minutes - virsh console <name> shows the boot'; exit 1; }",
+      "mutates": true,
+      "already": "false"
+    },
+    {
+      "id": "estate-name-resolution",
+      "title": "Estate name resolution",
+      "run": "HOSTS_BLOCK='\n# CloudStack lab estate\n10.100.99.11 mgmt-01\n10.100.99.21 ceph-01\n10.100.99.22 ceph-02\n10.100.99.23 ceph-03\n10.100.99.31 kvm-01\n10.100.99.32 kvm-02\n10.100.99.41 nfs-01'\n\nfor ip in 11 21 22 23 31 32 41; do\n  echo \"$HOSTS_BLOCK\" | ssh -o BatchMode=yes labadmin@10.100.99.$ip \\\n    \"grep -q 'CloudStack lab estate' /etc/hosts || sudo tee -a /etc/hosts > /dev/null\"\ndone\necho HOSTS-PUSHED",
+      "mutates": true,
+      "already": "for ip in 11 21 22 23 31 32 41; do ssh -o BatchMode=yes labadmin@10.100.99.$ip \"grep -q 'CloudStack lab estate' /etc/hosts\" || exit 1; done"
+    }
+  ],
+  "checks": [
+    {
+      "id": "seven-vms-running",
+      "title": "Seven vms running",
+      "run": "export LIBVIRT_DEFAULT_URI=qemu:///system; test \"$(virsh list --name | grep -cE '^(mgmt-01|ceph-0[123]|kvm-0[12]|nfs-01)$')\" -eq 7 && echo SEVEN-VMS-RUNNING",
+      "expect_output": "SEVEN-VMS-RUNNING"
+    },
+    {
+      "id": "estate-hostnames-answer",
+      "title": "Estate hostnames answer",
+      "run": "for ip in 11 21 22 23 31 32 41; do ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new labadmin@10.100.99.$ip hostname; done | tr '\\n' ' '",
+      "expect_output": "mgmt-01 ceph-01 ceph-02 ceph-03 kvm-01 kvm-02 nfs-01"
+    },
+    {
+      "id": "jumbo-frame-path",
+      "title": "Jumbo frame path",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 'ping -M do -s 8972 -c 3 10.200.99.22 -I 10.200.99.21' >/dev/null && echo JUMBO-OK",
+      "expect_output": "JUMBO-OK"
+    }
+  ]
+}

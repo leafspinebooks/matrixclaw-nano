@@ -1,0 +1,50 @@
+{
+  "name": "laptop32",
+  "title": "The reader lab: one platform host and seven nested virtual machines",
+  "description": "Where Nano runs each package. Nano runs ON the platform host - that is where a reader sits, and the seven virtual machines are the thing they are building. So 'lab-host' is this machine, and the estate is one hop away on the management network. There is no jump host and no bastion here: if you are running Nano somewhere else, you do not want this file.",
+  "address_plan": "The ebook's fixed lab address plan. lab-mgmt 10.100.99.0/24, lab-storage-fe 10.200.99.0/24, lab-storage-be 10.201.99.0/24. These are not secrets; they are the same addresses printed in the deployment guide.",
+  "honesty": "Nothing in this file is a credential. It names hosts, a user and the PATH to a private key. The key itself stays on your disk and never enters a package, a record or a report.",
+  "defaults": {
+    "user": "labadmin",
+    "port": 22,
+    "identity_file": "~/.ssh/id_ed25519",
+    "known_hosts": "~/.matrixclaw-nano/known_hosts",
+    "strict_host_key_checking": "accept-new",
+    "connect_timeout": 15
+  },
+  "hosts": {
+    "lab-host": {
+      "local": true,
+      "note": "The physical machine. Nano runs here, so its commands need no transport at all."
+    },
+    "mgmt-01": {
+      "address": "10.100.99.11",
+      "note": "CloudStack management server and its MySQL."
+    },
+    "ceph-01": {
+      "address": "10.100.99.21",
+      "note": "Ceph bootstrap node - cephadm runs from here."
+    },
+    "ceph-02": {
+      "address": "10.100.99.22",
+      "note": "Ceph node, joined by the cluster package rather than targeted directly."
+    },
+    "ceph-03": {
+      "address": "10.100.99.23",
+      "note": "Ceph node, joined by the cluster package rather than targeted directly."
+    },
+    "kvm-01": {
+      "address": "10.100.99.31",
+      "note": "First compute host."
+    },
+    "kvm-02": {
+      "address": "10.100.99.32",
+      "note": "Second compute host. Two are mandatory, not optional."
+    },
+    "nfs-01": {
+      "address": "10.100.99.41",
+      "note": "Secondary storage over NFS."
+    }
+  },
+  "known_hosts_note": "Nano keeps its own known_hosts under ~/.matrixclaw-nano/ rather than editing yours. It matters here: rebuilding the estate mints fresh host keys for the same seven addresses, and a stale entry in your own file would fail every connection with a warning about a changed key. Delete Nano's file when you tear the estate down; you cannot break your own SSH by doing it."
+}

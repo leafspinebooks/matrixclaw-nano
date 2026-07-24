@@ -1,0 +1,74 @@
+{
+  "name": "02-networks",
+  "title": "The five networks",
+  "order": 2,
+  "profile": "laptop32",
+  "target_host": "lab-host",
+  "description": "Define, start and autostart the five libvirt networks of the ebook's fixed lab plan on the physical host: NAT-ed lab-mgmt (10.100.99.1/24), isolated lab-storage-fe (10.200.99.1/24, MTU 9000), isolated lab-storage-be (10.201.99.1/24, MTU 9000), the VLAN-unaware lab-guest trunk, and NAT-ed lab-public (203.0.113.1/28) \u2014 then prove the bridges are up and the storage pair really carries MTU 9000.",
+  "source": "Generated from runbooks/lab/lab-networks.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {},
+  "steps": [
+    {
+      "id": "net-lab-mgmt",
+      "title": "Net lab mgmt",
+      "run": "cat > /tmp/lab-mgmt.xml << 'EOF'\n<network>\n  <name>lab-mgmt</name>\n  <bridge name='br-lab-mgmt'/>\n  <forward mode='nat'/>\n  <ip address='10.100.99.1' netmask='255.255.255.0'/>\n</network>\nEOF\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nvirsh net-define /tmp/lab-mgmt.xml\nvirsh net-start lab-mgmt\nvirsh net-autostart lab-mgmt\nrm -f /tmp/lab-mgmt.xml",
+      "mutates": true,
+      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh net-info lab-mgmt >/dev/null 2>&1"
+    },
+    {
+      "id": "net-lab-storage-fe",
+      "title": "Net lab storage fe",
+      "run": "cat > /tmp/lab-storage-fe.xml << 'EOF'\n<network>\n  <name>lab-storage-fe</name>\n  <bridge name='br-lab-stgfe'/>\n  <mtu size='9000'/>\n  <ip address='10.200.99.1' netmask='255.255.255.0'/>\n</network>\nEOF\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nvirsh net-define /tmp/lab-storage-fe.xml\nvirsh net-start lab-storage-fe\nvirsh net-autostart lab-storage-fe\nrm -f /tmp/lab-storage-fe.xml",
+      "mutates": true,
+      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh net-info lab-storage-fe >/dev/null 2>&1"
+    },
+    {
+      "id": "net-lab-storage-be",
+      "title": "Net lab storage be",
+      "run": "cat > /tmp/lab-storage-be.xml << 'EOF'\n<network>\n  <name>lab-storage-be</name>\n  <bridge name='br-lab-stgbe'/>\n  <mtu size='9000'/>\n  <ip address='10.201.99.1' netmask='255.255.255.0'/>\n</network>\nEOF\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nvirsh net-define /tmp/lab-storage-be.xml\nvirsh net-start lab-storage-be\nvirsh net-autostart lab-storage-be\nrm -f /tmp/lab-storage-be.xml",
+      "mutates": true,
+      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh net-info lab-storage-be >/dev/null 2>&1"
+    },
+    {
+      "id": "net-lab-guest",
+      "title": "Net lab guest",
+      "run": "cat > /tmp/lab-guest.xml << 'EOF'\n<network>\n  <name>lab-guest</name>\n  <bridge name='br-lab-guest'/>\n</network>\nEOF\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nvirsh net-define /tmp/lab-guest.xml\nvirsh net-start lab-guest\nvirsh net-autostart lab-guest\nrm -f /tmp/lab-guest.xml",
+      "mutates": true,
+      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh net-info lab-guest >/dev/null 2>&1"
+    },
+    {
+      "id": "net-lab-public",
+      "title": "Net lab public",
+      "run": "cat > /tmp/lab-public.xml << 'EOF'\n<network>\n  <name>lab-public</name>\n  <bridge name='br-lab-public'/>\n  <forward mode='nat'/>\n  <ip address='203.0.113.1' netmask='255.255.255.240'/>\n</network>\nEOF\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nvirsh net-define /tmp/lab-public.xml\nvirsh net-start lab-public\nvirsh net-autostart lab-public\nrm -f /tmp/lab-public.xml",
+      "mutates": true,
+      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh net-info lab-public >/dev/null 2>&1"
+    }
+  ],
+  "checks": [
+    {
+      "id": "five-networks-active",
+      "title": "Five networks active",
+      "run": "export LIBVIRT_DEFAULT_URI=qemu:///system; for n in lab-mgmt lab-storage-fe lab-storage-be lab-guest lab-public; do virsh net-list | grep -q \"$n .*active\" || exit 1; done && echo FIVE-NETWORKS-ACTIVE",
+      "expect_output": "FIVE-NETWORKS-ACTIVE"
+    },
+    {
+      "id": "five-bridges-up",
+      "title": "Five bridges up",
+      "run": "test \"$(ip -br link | grep -c br-lab)\" -eq 5 && echo FIVE-BRIDGES-OK",
+      "expect_output": "FIVE-BRIDGES-OK"
+    },
+    {
+      "id": "stgfe-mtu-9000",
+      "title": "Stgfe mtu 9000",
+      "run": "ip link show br-lab-stgfe | grep -o 'mtu 9000'",
+      "expect_output": "mtu 9000"
+    },
+    {
+      "id": "stgbe-mtu-9000",
+      "title": "Stgbe mtu 9000",
+      "run": "ip link show br-lab-stgbe | grep -o 'mtu 9000'",
+      "expect_output": "mtu 9000"
+    }
+  ]
+}

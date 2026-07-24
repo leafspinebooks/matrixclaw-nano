@@ -1,0 +1,113 @@
+{
+  "name": "05-ceph-cluster",
+  "title": "The Ceph cluster",
+  "order": 5,
+  "profile": "laptop32",
+  "target_host": "lab-host",
+  "description": "Grow the bootstrapped cluster to the ebook's full storage design, orchestrated from the physical host: podman/LVM on ceph-02 and ceph-03, the cephadm public key published to both, hosts joined, monitors pinned to the management network with client I/O on the MTU-9000 storage-fe network and replication on storage-be (set before any OSD exists \u2014 daemons bind at creation), a three-monitor quorum, six explicitly-claimed OSDs, pools rbd-prod (size 3) and rbd-dev (size 2) both RBD-initialised, and a client.cloudstack cephx identity scoped to exactly those two pools \u2014 never client.admin.",
+  "source": "Generated from runbooks/lab/lab-ceph-cluster.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {},
+  "steps": [
+    {
+      "id": "peer-prereqs",
+      "title": "Peer prereqs",
+      "run": "for ip in 22 23; do\n  ssh -o BatchMode=yes labadmin@10.100.99.$ip \"sudo apt update && sudo apt install -y podman lvm2\"\ndone",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.22 'dpkg -s podman 2>/dev/null | grep -q ok.installed && dpkg -s lvm2 2>/dev/null | grep -q ok.installed' && ssh -o BatchMode=yes labadmin@10.100.99.23 'dpkg -s podman 2>/dev/null | grep -q ok.installed && dpkg -s lvm2 2>/dev/null | grep -q ok.installed'"
+    },
+    {
+      "id": "publish-cephadm-key",
+      "title": "Publish cephadm key",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph cephadm get-pub-key\" > /tmp/ceph.pub\n\nfor ip in 22 23; do\n  ssh -o BatchMode=yes labadmin@10.100.99.$ip \\\n    \"sudo mkdir -p /root/.ssh && sudo tee -a /root/.ssh/authorized_keys > /dev/null\" < /tmp/ceph.pub\ndone\nrm -f /tmp/ceph.pub\necho CEPHADM-KEY-PUBLISHED",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.22 'sudo grep -q ceph /root/.ssh/authorized_keys 2>/dev/null' && ssh -o BatchMode=yes labadmin@10.100.99.23 'sudo grep -q ceph /root/.ssh/authorized_keys 2>/dev/null'"
+    },
+    {
+      "id": "join-ceph-02-03",
+      "title": "Join ceph 02 03",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph orch host add ceph-02 10.100.99.22\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph orch host add ceph-03 10.100.99.23\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph orch host ls\"",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph orch host ls' | grep -q ceph-03"
+    },
+    {
+      "id": "set-networks-before-osds",
+      "title": "Set networks before osds",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph config set mon public_network 10.100.99.0/24,10.200.99.0/24\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph config set global public_network 10.200.99.0/24\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph config set global cluster_network 10.201.99.0/24\"",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph config dump 2>/dev/null' | grep -q '10.201.99.0/24'"
+    },
+    {
+      "id": "mon-quorum-three",
+      "title": "Mon quorum three",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph orch apply mon --placement='ceph-01,ceph-02,ceph-03'\"",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph mon stat' | grep -q ceph-03"
+    },
+    {
+      "id": "create-six-osds",
+      "title": "Create six osds",
+      "run": "for h in ceph-01 ceph-02 ceph-03; do\n  for d in vdb vdc; do\n    ssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph orch daemon add osd $h:/dev/$d\"\n  done\ndone",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph osd stat' | grep -q '6 osds'"
+    },
+    {
+      "id": "pools-rbd-prod-rbd-dev",
+      "title": "Pools rbd prod rbd dev",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph osd pool create rbd-prod\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph osd pool set rbd-prod size 3\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph osd pool create rbd-dev\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph osd pool set rbd-dev size 2\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- rbd pool init rbd-prod\"\nssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- rbd pool init rbd-dev\"",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph osd pool ls' | grep -q rbd-dev"
+    },
+    {
+      "id": "scoped-cephx-client",
+      "title": "Scoped cephx client",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 \"sudo cephadm shell -- ceph auth get-or-create client.cloudstack mon 'profile rbd' osd 'profile rbd pool=rbd-prod, profile rbd pool=rbd-dev' >/dev/null\" && echo 'CEPHX-CLIENT-CREATED (key retrieval: ceph auth get-key client.cloudstack, interactively, on zone day)'",
+      "mutates": true,
+      "already": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph auth get client.cloudstack >/dev/null 2>&1'"
+    }
+  ],
+  "checks": [
+    {
+      "id": "three-hosts-in-cluster",
+      "title": "Three hosts in cluster",
+      "run": "test \"$(ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph orch host ls' | grep -c 'ceph-0')\" -eq 3 && echo THREE-HOSTS-OK",
+      "expect_output": "THREE-HOSTS-OK"
+    },
+    {
+      "id": "three-mons-in-quorum",
+      "title": "Three mons in quorum",
+      "run": "test \"$(ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph -s' | sed -n 's/.*quorum \\([^ ]*\\).*/\\1/p' | tr ',' '\\n' | grep -c .)\" -eq 3 && echo QUORUM-3-OK",
+      "expect_output": "QUORUM-3-OK"
+    },
+    {
+      "id": "six-osds-up-in",
+      "title": "Six osds up in",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph osd stat' | grep -o '6 up'",
+      "expect_output": "6 up"
+    },
+    {
+      "id": "health-ok",
+      "title": "Health ok",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph health'",
+      "expect_output": "HEALTH_OK"
+    },
+    {
+      "id": "pools-present",
+      "title": "Pools present",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph osd pool ls' | tr '\\n' ' '",
+      "expect_output": "rbd-prod"
+    },
+    {
+      "id": "rbd-dev-pool-present",
+      "title": "Rbd dev pool present",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph osd pool ls' | grep -o rbd-dev",
+      "expect_output": "rbd-dev"
+    },
+    {
+      "id": "cloudstack-client-exists",
+      "title": "Cloudstack client exists",
+      "run": "ssh -o BatchMode=yes labadmin@10.100.99.21 'sudo cephadm shell -- ceph auth get client.cloudstack >/dev/null 2>&1' && echo CEPHX-SCOPED-CLIENT-OK",
+      "expect_output": "CEPHX-SCOPED-CLIENT-OK"
+    }
+  ]
+}

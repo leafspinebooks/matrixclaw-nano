@@ -1,0 +1,171 @@
+{
+  "name": "10-manchester-zone",
+  "title": "The Manchester Zone",
+  "order": 10,
+  "profile": "laptop32",
+  "target_host": "mgmt-01",
+  "description": "Build the CloudStack Manchester zone the reader lab creates by hand in the deployment guide's Section 7.2 wizard, but as gated cmk commands on mgmt-01: an advanced zone with one physical network carrying Management/Guest/Public traffic on the cloudbr0/1/2 labels, the VirtualRouter provider enabled so system VMs can start, the public IP range, pod MAN-Pod-01, cluster MAN-Prod-01, both KVM compute hosts, RBD primary storage rbd-prod (untagged) and rbd-dev (tagged DEV), and NFS secondary storage; then the zone is enabled. Every command is a cmk call a reader can read and re-run; each is idempotent via a cmk-list probe, so a stopped build resumes rather than repeats.",
+  "source": "Route (a), ratified by the maintainer 2026-07-23: cmk over Nano's SSH transport. Commands DERIVED from ebooks/matrixclaw-framework scenarios/lab-manchester-zone.yaml and the proven adapter sequence in engine/matrixclaw/adapter/live.py (createZone -> createPhysicalNetwork -> addTrafficType x3 -> updatePhysicalNetwork -> VirtualRouter enablement -> createVlanIpRange -> createPod -> addCluster -> addHost x2 -> createStoragePool x2 -> addImageStore -> updateZone Enabled), which built the live Manchester zone on 2026-07-20 (run mc-20260720-224106). cmk verbs mirror the API command names; cmk's asyncblock polls async jobs, so no manual poll is transcribed.",
+  "honesty": "Steps change the CloudStack management state and are gated. Each carries a cmk-list 'already' probe, so a re-run skips what exists. Two secrets the maintainer places in mgmt-01's root-only /root/.mc-secrets.env (d-mc-010) are needed and sourced without ever entering a record: MC_HOST_ROOTPASS (the KVM hosts' root password, for addHost) and MC_RBD_SECRET (the client.cloudstack cephx key, for the rbd pools). A precondition step fails fast if either is missing. Checks are read-only cmk-list commands with exact-match markers so they cannot pass on their own error text. System VMs and the built-in template come up minutes after the zone is enabled, so cp11/cp13 are left to lab-smoke rather than claimed here.",
+  "variables": {
+    "zone": "Manchester",
+    "pod": "MAN-Pod-01",
+    "cluster": "MAN-Prod-01",
+    "monitor": "10.100.99.21",
+    "kvm_01": "10.100.99.31",
+    "kvm_02": "10.100.99.32",
+    "nfs": "10.100.99.41",
+    "secondary_path": "/export/secondary"
+  },
+  "steps": [
+    {
+      "id": "register-api-keys",
+      "title": "Register cmk API keys for admin",
+      "run": "uid=$(cmk list users username=admin | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"user\"][0][\"id\"])') && resp=$(cmk register userkeys id=\"$uid\") && ak=$(printf %s \"$resp\" | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"userkeys\"][\"apikey\"])') && sk=$(printf %s \"$resp\" | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"userkeys\"][\"secretkey\"])') && cmk set apikey \"$ak\" >/dev/null && cmk set secretkey \"$sk\" >/dev/null && cmk sync >/dev/null 2>&1 && echo API-KEYS-REGISTERED || { echo 'register-api-keys FAILED (cmk auth or registerUserKeys). Diagnose on mgmt-01: cmk list users username=admin ; cmk register userkeys id=<uid>' >&2; exit 1; }",
+      "mutates": true,
+      "already": "grep -qE '^apikey[[:space:]]*=[[:space:]]*[A-Za-z0-9_-]{10,}' ~/.cmk/config"
+    },
+    {
+      "id": "secrets-precondition",
+      "title": "Zone-build secrets present and non-empty",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && test -n \"$MC_HOST_ROOTPASS\" && test -n \"$MC_RBD_SECRET\"' && echo ZONE-SECRETS-PRESENT",
+      "mutates": false,
+      "already": "false"
+    },
+    {
+      "id": "create-zone",
+      "title": "Create advanced zone Manchester",
+      "run": "cmk create zone name=Manchester networktype=Advanced dns1=1.1.1.1 dns2=8.8.8.8 internaldns1=10.100.99.1 >/dev/null && echo ZONE-CREATED",
+      "mutates": true,
+      "already": "cmk list zones name=Manchester | grep -q '\"name\": \"Manchester\"'"
+    },
+    {
+      "id": "create-physical-network",
+      "title": "Create physical network lab-phys-01",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && cmk create physicalnetwork zoneid=\"$zid\" name=lab-phys-01 >/dev/null && echo PHYSNET-CREATED",
+      "mutates": true,
+      "already": "cmk list physicalnetworks | grep -q '\"name\": \"lab-phys-01\"'"
+    },
+    {
+      "id": "add-traffic-types",
+      "title": "Add Management/Guest/Public traffic types with KVM labels",
+      "run": "pid=$(cmk list physicalnetworks | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"physicalnetwork\"][0][\"id\"])') && cmk add traffictype physicalnetworkid=\"$pid\" traffictype=Management kvmnetworklabel=cloudbr0 >/dev/null && cmk add traffictype physicalnetworkid=\"$pid\" traffictype=Guest kvmnetworklabel=cloudbr1 >/dev/null && cmk add traffictype physicalnetworkid=\"$pid\" traffictype=Public kvmnetworklabel=cloudbr2 >/dev/null && echo TRAFFIC-TYPES-ADDED",
+      "mutates": true,
+      "already": "pid=$(cmk list physicalnetworks | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"physicalnetwork\"][0][\"id\"])') && cmk list traffictypes physicalnetworkid=\"$pid\" | grep -q '\"traffictype\": \"Public\"'"
+    },
+    {
+      "id": "enable-physical-network",
+      "title": "Set guest VLAN range 500-509 and enable the physical network",
+      "run": "pid=$(cmk list physicalnetworks | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"physicalnetwork\"][0][\"id\"])') && cmk update physicalnetwork id=\"$pid\" vlan=500-509 >/dev/null && cmk update physicalnetwork id=\"$pid\" state=Enabled >/dev/null && echo PHYSNET-ENABLED",
+      "mutates": true,
+      "already": "cmk list physicalnetworks | grep -q '\"state\": \"Enabled\"'"
+    },
+    {
+      "id": "enable-virtual-router",
+      "title": "Enable the VirtualRouter element and provider",
+      "run": "pid=$(cmk list physicalnetworks | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"physicalnetwork\"][0][\"id\"])') && nspid=$(cmk list networkserviceproviders physicalnetworkid=\"$pid\" name=VirtualRouter | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"networkserviceprovider\"][0][\"id\"])') && elid=$(cmk list virtualrouterelements nspid=\"$nspid\" | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"virtualrouterelement\"][0][\"id\"])') && cmk configure virtualrouterelement id=\"$elid\" enabled=true >/dev/null && cmk update networkserviceprovider id=\"$nspid\" state=Enabled >/dev/null && echo VIRTUALROUTER-ENABLED",
+      "mutates": true,
+      "already": "pid=$(cmk list physicalnetworks | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"physicalnetwork\"][0][\"id\"])') && cmk list networkserviceproviders physicalnetworkid=\"$pid\" name=VirtualRouter | grep -q '\"state\": \"Enabled\"'"
+    },
+    {
+      "id": "create-public-ip-range",
+      "title": "Create the public IP range 203.0.113.3-.14",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && cmk create vlaniprange zoneid=\"$zid\" forvirtualnetwork=true gateway=203.0.113.1 netmask=255.255.255.240 startip=203.0.113.3 endip=203.0.113.14 vlan=untagged >/dev/null && echo PUBLIC-RANGE-CREATED",
+      "mutates": true,
+      "already": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && cmk list vlanipranges zoneid=\"$zid\" | grep -q '\"startip\": \"203.0.113.3\"'"
+    },
+    {
+      "id": "create-pod",
+      "title": "Create pod MAN-Pod-01",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && cmk create pod zoneid=\"$zid\" name=MAN-Pod-01 gateway=10.100.99.1 netmask=255.255.255.0 startip=10.100.99.100 endip=10.100.99.149 >/dev/null && echo POD-CREATED",
+      "mutates": true,
+      "already": "cmk list pods name=MAN-Pod-01 | grep -q '\"name\": \"MAN-Pod-01\"'"
+    },
+    {
+      "id": "create-cluster",
+      "title": "Create cluster MAN-Prod-01",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && podid=$(cmk list pods name=MAN-Pod-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"pod\"][0][\"id\"])') && cmk add cluster zoneid=\"$zid\" podid=\"$podid\" clustername=MAN-Prod-01 clustertype=CloudManaged hypervisor=KVM >/dev/null && echo CLUSTER-CREATED",
+      "mutates": true,
+      "already": "cmk list clusters | grep -q '\"name\": \"MAN-Prod-01\"'"
+    },
+    {
+      "id": "add-host-kvm-01",
+      "title": "Add KVM compute host kvm-01",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && podid=$(cmk list pods name=MAN-Pod-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"pod\"][0][\"id\"])') && clid=$(cmk list clusters | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"cluster\"][0][\"id\"])') && pw=$(sudo bash -c '. /root/.mc-secrets.env && printf %s \"$MC_HOST_ROOTPASS\"') && cmk add host zoneid=\"$zid\" podid=\"$podid\" clusterid=\"$clid\" hypervisor=KVM url=http://10.100.99.31 username=root password=\"$pw\" >/dev/null && echo HOST-KVM01-ADDED",
+      "mutates": true,
+      "already": "cmk list hosts name=kvm-01 | grep -q '\"name\": \"kvm-01\"'"
+    },
+    {
+      "id": "add-host-kvm-02",
+      "title": "Add KVM compute host kvm-02",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && podid=$(cmk list pods name=MAN-Pod-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"pod\"][0][\"id\"])') && clid=$(cmk list clusters | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"cluster\"][0][\"id\"])') && pw=$(sudo bash -c '. /root/.mc-secrets.env && printf %s \"$MC_HOST_ROOTPASS\"') && cmk add host zoneid=\"$zid\" podid=\"$podid\" clusterid=\"$clid\" hypervisor=KVM url=http://10.100.99.32 username=root password=\"$pw\" >/dev/null && echo HOST-KVM02-ADDED",
+      "mutates": true,
+      "already": "cmk list hosts name=kvm-02 | grep -q '\"name\": \"kvm-02\"'"
+    },
+    {
+      "id": "create-primary-rbd-prod",
+      "title": "Create RBD primary storage rbd-prod",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && podid=$(cmk list pods name=MAN-Pod-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"pod\"][0][\"id\"])') && clid=$(cmk list clusters | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"cluster\"][0][\"id\"])') && key=$(sudo bash -c '. /root/.mc-secrets.env && printf %s \"$MC_RBD_SECRET\"') && cmk create storagepool zoneid=\"$zid\" podid=\"$podid\" clusterid=\"$clid\" scope=cluster name=rbd-prod url=\"rbd://cloudstack:$key@10.100.99.21/rbd-prod\" >/dev/null && echo RBDPROD-CREATED",
+      "mutates": true,
+      "already": "cmk list storagepools name=rbd-prod | grep -q '\"name\": \"rbd-prod\"'"
+    },
+    {
+      "id": "create-primary-rbd-dev",
+      "title": "Create RBD primary storage rbd-dev (tagged DEV)",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && podid=$(cmk list pods name=MAN-Pod-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"pod\"][0][\"id\"])') && clid=$(cmk list clusters | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"cluster\"][0][\"id\"])') && key=$(sudo bash -c '. /root/.mc-secrets.env && printf %s \"$MC_RBD_SECRET\"') && cmk create storagepool zoneid=\"$zid\" podid=\"$podid\" clusterid=\"$clid\" scope=cluster name=rbd-dev url=\"rbd://cloudstack:$key@10.100.99.21/rbd-dev\" tags=DEV >/dev/null && echo RBDDEV-CREATED",
+      "mutates": true,
+      "already": "cmk list storagepools name=rbd-dev | grep -q '\"name\": \"rbd-dev\"'"
+    },
+    {
+      "id": "add-secondary-and-enable-zone",
+      "title": "Add NFS secondary storage and enable the zone",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && cmk add imagestore name=nfs-secondary provider=NFS zoneid=\"$zid\" url=nfs://10.100.99.41/export/secondary >/dev/null && cmk update zone id=\"$zid\" allocationstate=Enabled >/dev/null && echo SECONDARY-ADDED-ZONE-ENABLED",
+      "mutates": true,
+      "already": "cmk list imagestores name=nfs-secondary | grep -q '\"name\": \"nfs-secondary\"' && cmk list zones name=Manchester | grep -q '\"allocationstate\": \"Enabled\"'"
+    }
+  ],
+  "checks": [
+    {
+      "id": "zone-enabled",
+      "title": "Zone Manchester is Enabled",
+      "run": "cmk list zones name=Manchester | python3 -c 'import sys,json;d=sys.stdin.read();z=(json.loads(d)[\"zone\"][0] if d.strip() else {});print(\"ZONE-ENABLED-OK\" if z.get(\"allocationstate\")==\"Enabled\" else \"zone-not-enabled\")'",
+      "expect_output": "ZONE-ENABLED-OK"
+    },
+    {
+      "id": "pod-present",
+      "title": "Pod MAN-Pod-01 present",
+      "run": "cmk list pods name=MAN-Pod-01 | grep -q '\"name\": \"MAN-Pod-01\"' && echo POD-OK",
+      "expect_output": "POD-OK"
+    },
+    {
+      "id": "cluster-present",
+      "title": "Cluster MAN-Prod-01 present",
+      "run": "cmk list clusters | grep -q '\"name\": \"MAN-Prod-01\"' && echo CLUSTER-OK",
+      "expect_output": "CLUSTER-OK"
+    },
+    {
+      "id": "two-hosts-up",
+      "title": "Two routing hosts Up in the cluster",
+      "run": "cmk list hosts type=Routing state=Up | python3 -c 'import sys,json;d=sys.stdin.read();n=len(json.loads(d).get(\"host\",[])) if d.strip() else 0;print(\"HOSTS-2-UP-OK\" if n==2 else (\"host-up-count=\"+str(n)))'",
+      "expect_output": "HOSTS-2-UP-OK"
+    },
+    {
+      "id": "rbd-prod-present",
+      "title": "Primary storage rbd-prod present",
+      "run": "cmk list storagepools name=rbd-prod | grep -q '\"name\": \"rbd-prod\"' && echo RBD-PROD-OK",
+      "expect_output": "RBD-PROD-OK"
+    },
+    {
+      "id": "rbd-dev-tagged",
+      "title": "Primary storage rbd-dev present and tagged DEV",
+      "run": "cmk list storagepools name=rbd-dev | python3 -c 'import sys,json;d=sys.stdin.read();p=(json.loads(d)[\"storagepool\"][0] if d.strip() else {});print(\"RBD-DEV-TAGGED-OK\" if p.get(\"name\")==\"rbd-dev\" and \"DEV\" in (p.get(\"tags\") or \"\") else \"rbd-dev-untagged\")'",
+      "expect_output": "RBD-DEV-TAGGED-OK"
+    },
+    {
+      "id": "secondary-present",
+      "title": "NFS secondary storage present",
+      "run": "cmk list imagestores name=nfs-secondary | grep -q '\"name\": \"nfs-secondary\"' && echo SECONDARY-OK",
+      "expect_output": "SECONDARY-OK"
+    }
+  ]
+}

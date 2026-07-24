@@ -1,0 +1,122 @@
+{
+  "name": "01-platform-host",
+  "title": "The platform host",
+  "order": 1,
+  "profile": "laptop32",
+  "target_host": "lab-host",
+  "description": "Take the physical lab host from bare Ubuntu 24.04 + SSH to the platform the seven-VM estate stands on: nested virtualisation enabled and gated fail-fast, sysctl tuning, the KVM/libvirt/cloud-image toolchain, the lab ed25519 keypair, the lab and iso storage pools, the noble cloud image fetched, and the estate snapshot/revert scripts installed.",
+  "source": "Generated from runbooks/lab/lab-host.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {
+    "lab_user": "labadmin"
+  },
+  "steps": [
+    {
+      "id": "nested-virt-enable",
+      "title": "Nested virt enable",
+      "run": "if grep -q vmx /proc/cpuinfo; then M=kvm_intel; else M=kvm_amd; fi\necho \"options $M nested=1\" | sudo tee /etc/modprobe.d/kvm-lab.conf\nsudo modprobe -r $M || true\nsudo modprobe $M\ncat /sys/module/$M/parameters/nested",
+      "mutates": true,
+      "already": "grep -qE '[Y1]' /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null"
+    },
+    {
+      "id": "nested-virt-gate",
+      "title": "Nested virt gate",
+      "run": "grep -qE '[Y1]' /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null && echo NESTED-VIRT-OK || (echo 'FATAL: nested virtualisation is OFF - enable VT-x/VT-d in BIOS and re-plan' && exit 1)",
+      "mutates": false,
+      "already": "false"
+    },
+    {
+      "id": "sysctl-lab-tuning",
+      "title": "Sysctl lab tuning",
+      "run": "sudo tee /etc/sysctl.d/99-cloudstack-lab.conf > /dev/null << 'EOF'\nnet.ipv4.ip_forward = 1\nvm.swappiness = 10\nfs.aio-max-nr = 1048576\nEOF\nsudo sysctl -p /etc/sysctl.d/99-cloudstack-lab.conf",
+      "mutates": true,
+      "already": "test -f /etc/sysctl.d/99-cloudstack-lab.conf"
+    },
+    {
+      "id": "kvm-libvirt-stack",
+      "title": "Kvm libvirt stack",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils libguestfs-tools cloud-image-utils chrony && sudo systemctl enable --now chrony && sudo usermod -aG libvirt,kvm {{lab_user}}",
+      "mutates": true,
+      "already": "dpkg -s virtinst 2>/dev/null | grep -q ok.installed && dpkg -s cloud-image-utils 2>/dev/null | grep -q ok.installed && id -nG {{lab_user}} | grep -qw libvirt && id -nG {{lab_user}} | grep -qw kvm"
+    },
+    {
+      "id": "lab-ssh-keypair",
+      "title": "Lab ssh keypair",
+      "run": "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -C '{{lab_user}}@lab-host' && echo LAB-KEY-CREATED",
+      "mutates": true,
+      "already": "test -f ~/.ssh/id_ed25519.pub"
+    },
+    {
+      "id": "storage-pools",
+      "title": "Storage pools",
+      "run": "sudo mkdir -p /data/lab /data/iso\nsudo chown {{lab_user}}: /data/lab /data/iso\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nfor p in lab iso; do\n  virsh pool-define-as $p dir --target /data/$p\n  virsh pool-build $p\n  virsh pool-start $p\n  virsh pool-autostart $p\ndone\nvirsh pool-list",
+      "mutates": true,
+      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh pool-list | grep -q 'lab .*active' && virsh pool-list | grep -q 'iso .*active'"
+    },
+    {
+      "id": "fetch-cloud-image",
+      "title": "Fetch cloud image",
+      "run": "sudo chown {{lab_user}}: /data/lab /data/iso && cd /data/iso && wget -c https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img && qemu-img info noble-server-cloudimg-amd64.img",
+      "mutates": true,
+      "already": "test -f /data/iso/noble-server-cloudimg-amd64.img"
+    },
+    {
+      "id": "install-lab-snapshot-script",
+      "title": "Install lab snapshot script",
+      "run": "tee ~/lab-snapshot.sh > /dev/null << 'EOF'\n#!/usr/bin/env bash\nset -euo pipefail\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nVMS=\"mgmt-01 ceph-01 ceph-02 ceph-03 kvm-01 kvm-02 nfs-01\"\nSNAP=${1:-baseline}\nfor vm in $VMS; do virsh shutdown $vm 2>/dev/null || true; done\necho \"Waiting for clean shutdowns...\"\nwhile virsh list --name | grep -qE 'mgmt|ceph|kvm|nfs'; do sleep 5; done\nfor vm in $VMS; do virsh snapshot-create-as $vm \"$SNAP\"; done\nfor vm in $VMS; do virsh start $vm; done\necho \"Snapshot '$SNAP' taken across the estate; everything restarting.\"\nEOF\nchmod +x ~/lab-snapshot.sh",
+      "mutates": true,
+      "already": "test -x ~/lab-snapshot.sh"
+    },
+    {
+      "id": "install-lab-revert-script",
+      "title": "Install lab revert script",
+      "run": "tee ~/lab-revert.sh > /dev/null << 'EOF'\n#!/usr/bin/env bash\nset -euo pipefail\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nVMS=\"mgmt-01 ceph-01 ceph-02 ceph-03 kvm-01 kvm-02 nfs-01\"\nSNAP=${1:-baseline}\nfor vm in $VMS; do virsh destroy $vm 2>/dev/null || true; done\nfor vm in $VMS; do virsh snapshot-revert $vm \"$SNAP\"; done\nfor vm in $VMS; do virsh start $vm; done\necho \"Estate reverted to '$SNAP' and restarting \u2014 allow a few minutes to settle.\"\nEOF\nchmod +x ~/lab-revert.sh",
+      "mutates": true,
+      "already": "test -x ~/lab-revert.sh"
+    }
+  ],
+  "checks": [
+    {
+      "id": "nested-virt-on",
+      "title": "Nested virt on",
+      "run": "grep -qE '[Y1]' /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null && echo NESTED-OK",
+      "expect_output": "NESTED-OK"
+    },
+    {
+      "id": "libvirtd-active",
+      "title": "Libvirtd active",
+      "run": "systemctl is-active libvirtd",
+      "expect_output": "active"
+    },
+    {
+      "id": "lab-pool-active",
+      "title": "Lab pool active",
+      "run": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh pool-list | grep -q 'lab .*active' && echo LAB-POOL-ACTIVE",
+      "expect_output": "LAB-POOL-ACTIVE"
+    },
+    {
+      "id": "iso-pool-active",
+      "title": "Iso pool active",
+      "run": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh pool-list | grep -q 'iso .*active' && echo ISO-POOL-ACTIVE",
+      "expect_output": "ISO-POOL-ACTIVE"
+    },
+    {
+      "id": "cloud-image-present",
+      "title": "Cloud image present",
+      "run": "test -f /data/iso/noble-server-cloudimg-amd64.img && echo IMAGE-OK",
+      "expect_output": "IMAGE-OK"
+    },
+    {
+      "id": "lab-key-present",
+      "title": "Lab key present",
+      "run": "test -f ~/.ssh/id_ed25519.pub && echo KEY-OK",
+      "expect_output": "KEY-OK"
+    },
+    {
+      "id": "snapshot-tooling-present",
+      "title": "Snapshot tooling present",
+      "run": "test -x ~/lab-snapshot.sh && test -x ~/lab-revert.sh && echo TOOLING-OK",
+      "expect_output": "TOOLING-OK"
+    }
+  ]
+}

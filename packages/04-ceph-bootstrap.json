@@ -1,0 +1,63 @@
+{
+  "name": "04-ceph-bootstrap",
+  "title": "Bootstrapping Ceph",
+  "order": 4,
+  "profile": "laptop32",
+  "target_host": "ceph-01",
+  "description": "Prepare ceph-01 and bootstrap the storage cluster with cephadm: container runtime and LVM prerequisites, the cephadm package, then the same one-command bootstrap production uses with --mon-ip on the management network \u2014 full bootstrap output (including the generated dashboard credential) kept root-only on the host, never in evidence.",
+  "source": "Generated from runbooks/lab/lab-ceph-bootstrap.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {
+    "mon_ip": "10.100.99.21"
+  },
+  "steps": [
+    {
+      "id": "cephadm-prereqs",
+      "title": "Cephadm prereqs",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q podman lvm2",
+      "mutates": true,
+      "already": "dpkg -s podman 2>/dev/null | grep -q ok.installed && dpkg -s lvm2 2>/dev/null | grep -q ok.installed"
+    },
+    {
+      "id": "cephadm-package",
+      "title": "Cephadm package",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q cephadm",
+      "mutates": true,
+      "already": "command -v cephadm >/dev/null 2>&1"
+    },
+    {
+      "id": "cephadm-bootstrap",
+      "title": "Cephadm bootstrap",
+      "run": "sudo bash -c 'cephadm bootstrap --mon-ip {{mon_ip}} > /root/ceph-bootstrap.out 2>&1 && chmod 600 /root/ceph-bootstrap.out' && echo 'BOOTSTRAP-DONE (dashboard credentials in root-only /root/ceph-bootstrap.out on ceph-01 - record them in the password manager, then delete the file)'",
+      "mutates": true,
+      "already": "sudo test -f /etc/ceph/ceph.conf && sudo cephadm shell -- ceph -s >/dev/null 2>&1"
+    }
+  ],
+  "checks": [
+    {
+      "id": "cephadm-installed",
+      "title": "Cephadm installed",
+      "run": "command -v cephadm >/dev/null 2>&1 && echo CEPHADM-OK",
+      "expect_output": "CEPHADM-OK"
+    },
+    {
+      "id": "cluster-answers",
+      "title": "Cluster answers",
+      "run": "sudo cephadm shell -- ceph -s >/dev/null 2>&1 && echo CLUSTER-ANSWERS",
+      "expect_output": "CLUSTER-ANSWERS"
+    },
+    {
+      "id": "mon-on-mgmt-network",
+      "title": "Mon on mgmt network",
+      "run": "sudo cephadm shell -- ceph mon dump 2>/dev/null | grep -o '{{mon_ip}}' | head -1",
+      "expect_output": "10.100.99.21"
+    },
+    {
+      "id": "credential-file-secured",
+      "title": "Credential file secured",
+      "run": "sudo bash -c '! test -f /root/ceph-bootstrap.out || test \"$(stat -c %a:%U /root/ceph-bootstrap.out)\" = \"600:root\"' && echo CREDENTIAL-SECURED-OK",
+      "advice": "The dashboard credential cephadm generated is in /root/ceph-bootstrap.out on\nceph-01, readable only by root. Retrieve it, put it in your password manager,\nand delete the file:\n\n    ssh labadmin@10.100.99.21 \"sudo grep -i password /root/ceph-bootstrap.out\"\n    ssh labadmin@10.100.99.21 \"sudo rm /root/ceph-bootstrap.out\"\n\nThis check passes either way - it asserts that the file is not readable by\nanyone but root, not that you have got round to deleting it. If it FAILS, the\npermissions have been widened and the credential is exposed.",
+      "expect_output": "CREDENTIAL-SECURED-OK"
+    }
+  ]
+}

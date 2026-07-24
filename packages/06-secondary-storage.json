@@ -1,0 +1,69 @@
+{
+  "name": "06-secondary-storage",
+  "title": "Secondary storage (NFS)",
+  "order": 6,
+  "profile": "laptop32",
+  "target_host": "nfs-01",
+  "description": "Take nfs-01 from cloud-init Ubuntu to the zone's secondary storage: NFS kernel server, /export/secondary with CloudStack-compatible options, exported to the lab management subnet only \u2014 no primary export, because primary storage in the reader lab is Ceph RBD.",
+  "source": "Generated from runbooks/lab/lab-nfs-01.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {
+    "export_subnet": "10.100.99.0/24"
+  },
+  "steps": [
+    {
+      "id": "apt-nfs-server",
+      "title": "Apt nfs server",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q nfs-kernel-server chrony && sudo systemctl enable --now chrony",
+      "mutates": true,
+      "already": "dpkg -s nfs-kernel-server 2>/dev/null | grep -q ok.installed"
+    },
+    {
+      "id": "secondary-export-directory",
+      "title": "Secondary export directory",
+      "run": "sudo mkdir -p /export/secondary && sudo chown nobody:nogroup /export/secondary",
+      "mutates": true,
+      "already": "test -d /export/secondary"
+    },
+    {
+      "id": "exports-config",
+      "title": "Exports config",
+      "run": "echo '/export/secondary {{export_subnet}}(rw,async,no_root_squash,no_subtree_check)' | sudo tee /etc/exports && sudo exportfs -ra",
+      "mutates": true,
+      "already": "grep -q '/export/secondary' /etc/exports"
+    },
+    {
+      "id": "nfs-service-enabled",
+      "title": "Nfs service enabled",
+      "run": "sudo systemctl enable --now nfs-kernel-server",
+      "mutates": true,
+      "already": "systemctl is-active nfs-kernel-server >/dev/null 2>&1"
+    }
+  ],
+  "checks": [
+    {
+      "id": "secondary-export-visible",
+      "title": "Secondary export visible",
+      "run": "showmount -e localhost",
+      "expect_output": "/export/secondary"
+    },
+    {
+      "id": "secondary-dir",
+      "title": "Secondary dir",
+      "run": "test -d /export/secondary && echo SECONDARY-OK",
+      "expect_output": "SECONDARY-OK"
+    },
+    {
+      "id": "no-primary-export",
+      "title": "No primary export",
+      "run": "grep -q '/export/primary' /etc/exports && echo UNEXPECTED-PRIMARY || echo PRIMARY-ABSENT-OK",
+      "expect_output": "PRIMARY-ABSENT-OK"
+    },
+    {
+      "id": "nfs-active",
+      "title": "Nfs active",
+      "run": "systemctl is-active nfs-kernel-server",
+      "expect_output": "active"
+    }
+  ]
+}

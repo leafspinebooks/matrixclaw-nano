@@ -1,0 +1,128 @@
+{
+  "name": "07-management-server",
+  "title": "The CloudStack management server",
+  "order": 7,
+  "profile": "laptop32",
+  "target_host": "mgmt-01",
+  "description": "Take mgmt-01 from cloud-init Ubuntu to the estate's management plane: MySQL with the ebook's nested-lab tuning, root DB credential set from the host-side secrets file, the CloudStack 4.22 apt repo, cloudstack-management installed, databases deployed, the service answering on :8080, and the systemvm template handled per the parameterised seed mode (auto by default, explicit for offline profiles).",
+  "source": "Generated from runbooks/lab/lab-mgmt-01.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
+  "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
+  "variables": {
+    "mysql_max_connections": 350,
+    "nfs_ip": "10.100.99.41",
+    "seed_mode": "auto"
+  },
+  "steps": [
+    {
+      "id": "secrets-file-present",
+      "title": "Secrets file present",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && test -n \"$MC_MYSQL_ROOT_PASS\" && test -n \"$MC_DB_PASS\"' && test \"$(sudo stat -c %a /root/.mc-secrets.env)\" = 600 && echo SECRETS-PRESENT-OK",
+      "mutates": false,
+      "advice": "This phase needs /root/.mc-secrets.env on this host, mode 600, owned by root.\nIt is not in the repository and never will be: it holds passwords, and neither\na package nor a run record is a place for those.\n\nCreate it yourself on the target host, with values of your own choosing:\n\n    sudo install -m 600 /dev/null /root/.mc-secrets.env\n    sudo tee /root/.mc-secrets.env >/dev/null <<'ENV'\n    MC_MYSQL_ROOT_PASS='<a password you choose>'\n    MC_DB_PASS='<a different password you choose>'\n    ENV\n\nThis phase needs: MC_MYSQL_ROOT_PASS MC_DB_PASS - each one non-empty.\n\nBeware quoting. A value containing an apostrophe will terminate its own\nsingle-quoted string and silently swallow the following line, leaving\nevery variable empty while the file still looks fine. Alphanumeric\nvalues avoid the problem entirely.\n\nThen run this phase again. Nothing has been changed on this host."
+    },
+    {
+      "id": "apt-baseline",
+      "title": "Apt baseline",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q chrony gnupg wget nfs-common && sudo systemctl enable --now chrony",
+      "mutates": true,
+      "already": "systemctl is-active chrony >/dev/null 2>&1 && dpkg -s nfs-common 2>/dev/null | grep -q ok.installed"
+    },
+    {
+      "id": "mysql-server",
+      "title": "Mysql server",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q mysql-server",
+      "mutates": true,
+      "already": "systemctl is-active mysql >/dev/null 2>&1"
+    },
+    {
+      "id": "mysql-lab-tuning",
+      "title": "Mysql lab tuning",
+      "run": "sudo tee /etc/mysql/mysql.conf.d/cloudstack.cnf > /dev/null << 'EOF'\n[mysqld]\nserver-id = 1\ninnodb_rollback_on_timeout = 1\ninnodb_lock_wait_timeout = 600\nmax_connections = {{mysql_max_connections}}\nlog-bin = mysql-bin\nbinlog-format = 'ROW'\nEOF\nsudo systemctl restart mysql",
+      "mutates": true,
+      "already": "grep -q 'max_connections = {{mysql_max_connections}}' /etc/mysql/mysql.conf.d/cloudstack.cnf 2>/dev/null"
+    },
+    {
+      "id": "mysql-root-password",
+      "title": "Mysql root password",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -e \"ALTER USER '\\''root'\\''@'\\''localhost'\\'' IDENTIFIED WITH mysql_native_password BY '\\''$MC_MYSQL_ROOT_PASS'\\'';\"'",
+      "mutates": true,
+      "already": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -e \"select 1\"' >/dev/null 2>&1 && ! sudo mysql -e \"select 1\" >/dev/null 2>&1"
+    },
+    {
+      "id": "cloudstack-apt-repo",
+      "title": "Cloudstack apt repo",
+      "run": "sudo mkdir -p /etc/apt/keyrings && wget -qO- https://download.cloudstack.org/release.asc | sudo gpg --dearmor -o /etc/apt/keyrings/cloudstack.gpg && echo \"deb [signed-by=/etc/apt/keyrings/cloudstack.gpg] https://download.cloudstack.org/ubuntu $(lsb_release -cs) 4.22\" | sudo tee /etc/apt/sources.list.d/cloudstack.list && sudo apt-get update -q",
+      "mutates": true,
+      "already": "test -f /etc/apt/sources.list.d/cloudstack.list"
+    },
+    {
+      "id": "cloudstack-management-package",
+      "title": "Cloudstack management package",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q cloudstack-management",
+      "mutates": true,
+      "already": "dpkg -s cloudstack-management 2>/dev/null | grep -q ok.installed"
+    },
+    {
+      "id": "cloudstack-databases",
+      "title": "Cloudstack databases",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && cloudstack-setup-databases cloud:$MC_DB_PASS@localhost --deploy-as=root:$MC_MYSQL_ROOT_PASS'",
+      "mutates": true,
+      "already": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -e \"use cloud\"' >/dev/null 2>&1",
+      "destructive": true,
+      "destroys": "the existing CloudStack database on this host, including every zone, host, account and volume record. There is no undo and Nano takes no backup."
+    },
+    {
+      "id": "cluster-node-ip",
+      "title": "Cluster node ip",
+      "run": "sudo sed -i \"s/^cluster.node.IP=.*/cluster.node.IP=$(hostname -I | awk '{print $1}')/\" /etc/cloudstack/management/db.properties",
+      "mutates": true,
+      "already": "sudo grep -q \"^cluster.node.IP=$(hostname -I | awk '{print $1}')$\" /etc/cloudstack/management/db.properties"
+    },
+    {
+      "id": "cloudstack-management-setup",
+      "title": "Cloudstack management setup",
+      "run": "sudo cloudstack-setup-management && sleep 90",
+      "mutates": true,
+      "already": "systemctl is-active cloudstack-management >/dev/null 2>&1 && test \"$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/client/)\" = 200"
+    },
+    {
+      "id": "systemvm-template",
+      "title": "Systemvm template",
+      "run": "if [ \"{{seed_mode}}\" = \"explicit\" ]; then\n  sudo mkdir -p /mnt/secondary\n  sudo mount -t nfs {{nfs_ip}}:/export/secondary /mnt/secondary\n  sudo /usr/share/cloudstack-common/scripts/storage/secondary/cloud-install-sys-tmplt \\\n    -m /mnt/secondary \\\n    -u https://download.cloudstack.org/systemvm/4.22/systemvmtemplate-4.22.0-x86_64-kvm.qcow2.bz2 \\\n    -h kvm -F\n  sudo umount /mnt/secondary\nelse\n  echo 'seed_mode=auto (d-mc-020 default): management server auto-seeds the systemvm template - no manual action'\nfi",
+      "mutates": true,
+      "already": "test \"{{seed_mode}}\" != \"explicit\" || sudo test -d /mnt/secondary/template/tmpl/1/3 -o -d /mnt/secondary/template/tmpl/1/9"
+    }
+  ],
+  "checks": [
+    {
+      "id": "mysql-active",
+      "title": "Mysql active",
+      "run": "systemctl is-active mysql",
+      "expect_output": "active"
+    },
+    {
+      "id": "mysql-max-connections-applied",
+      "title": "Mysql max connections applied",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"show variables like \\\"max_connections\\\"\"' 2>/dev/null | grep -qw {{mysql_max_connections}} && echo MAXCONN-OK",
+      "expect_output": "MAXCONN-OK"
+    },
+    {
+      "id": "cloud-db-exists",
+      "title": "Cloud db exists",
+      "run": "sudo bash -c '. /root/.mc-secrets.env && mysql -uroot -p\"$MC_MYSQL_ROOT_PASS\" -N -e \"show databases like \\\"cloud\\\"\"' 2>/dev/null",
+      "expect_output": "cloud"
+    },
+    {
+      "id": "management-active",
+      "title": "Management active",
+      "run": "systemctl is-active cloudstack-management",
+      "expect_output": "active"
+    },
+    {
+      "id": "ui-responds",
+      "title": "Ui responds",
+      "run": "test \"$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/client/)\" = 200 && echo UI-HTTP-200-OK",
+      "expect_output": "UI-HTTP-200-OK"
+    }
+  ]
+}

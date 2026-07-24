@@ -1,0 +1,79 @@
+{
+  "name": "11-first-guest",
+  "title": "The First Guest",
+  "order": 11,
+  "profile": "laptop32",
+  "target_host": "mgmt-01",
+  "description": "Deploy the reader lab's first user workload onto the live Manchester zone, as gated cmk commands on mgmt-01: one isolated guest network man-guest-01 (10.10.0.0/24, SourceNat, a VLAN from the zone's 500-509 range) and one small CentOS guest guest-01 from the zone's built-in template, then ensure its root volume lands on the production pool rbd-prod (CloudStack's allocator does not guarantee that on its own). Then prove the guest is Running, on its network, at the Small Instance offering, with its volume Ready on rbd-prod. Idempotent via cmk-list probes.",
+  "source": "Route (a): cmk over Nano's SSH transport. Commands DERIVED from ebooks/matrixclaw-framework scenarios/lab-first-guest.yaml and the adapter's create_network / create_vm (createNetwork -> deployVirtualMachine) in engine/matrixclaw/adapter/live.py, which deployed the live first guest on 2026-07-21 (run mc-20260721-061119). The template, offering and network-offering names are resolved to uuids at call time exactly as the adapter does.",
+  "honesty": "Three steps change the CloudStack state and are gated; each carries a cmk-list 'already' probe so a re-run skips what exists. The third (pin the root volume to rbd-prod) exists because CloudStack's storage allocator freely uses either cluster pool for an untagged offering, so a fresh deploy lands the volume at random; it stops the guest, migrates the volume and starts it (~1 min), and is skipped once the volume is already on rbd-prod. No secrets are needed here (the guest uses the zone's built-in template and a default offering). Checks are read-only cmk-list commands with exact-match markers so they cannot pass on their own error text. This package REQUIRES package 10 first: the template only exists once the zone and secondary storage have seeded the system VMs, and the network needs the zone.",
+  "variables": {
+    "zone": "Manchester",
+    "network": "man-guest-01",
+    "cidr": "10.10.0.0/24",
+    "guest": "guest-01",
+    "template": "CentOS 5.5(64-bit) no GUI (KVM)",
+    "offering": "Small Instance"
+  },
+  "steps": [
+    {
+      "id": "create-guest-network",
+      "title": "Create isolated guest network man-guest-01 (10.10.0.0/24)",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && noid=$(cmk list networkofferings name=DefaultIsolatedNetworkOfferingWithSourceNatService | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"networkoffering\"][0][\"id\"])') && cmk create network name=man-guest-01 displaytext=man-guest-01 zoneid=\"$zid\" networkofferingid=\"$noid\" gateway=10.10.0.1 netmask=255.255.255.0 >/dev/null && echo GUEST-NET-CREATED",
+      "mutates": true,
+      "already": "cmk list networks name=man-guest-01 | grep -q '\"name\": \"man-guest-01\"'"
+    },
+    {
+      "id": "deploy-guest",
+      "title": "Deploy guest-01 (CentOS built-in, Small Instance) on man-guest-01",
+      "run": "zid=$(cmk list zones name=Manchester | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"zone\"][0][\"id\"])') && tid=$(cmk list templates templatefilter=all name=\"CentOS 5.5(64-bit) no GUI (KVM)\" | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"template\"][0][\"id\"])') && soid=$(cmk list serviceofferings name=\"Small Instance\" | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"serviceoffering\"][0][\"id\"])') && nid=$(cmk list networks name=man-guest-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"network\"][0][\"id\"])') && cmk deploy virtualmachine name=guest-01 displayname=guest-01 zoneid=\"$zid\" templateid=\"$tid\" serviceofferingid=\"$soid\" networkids=\"$nid\" >/dev/null && echo GUEST-DEPLOYED",
+      "mutates": true,
+      "already": "cmk list virtualmachines name=guest-01 | grep -q '\"name\": \"guest-01\"'"
+    },
+    {
+      "id": "pin-guest-volume-to-rbd-prod",
+      "title": "Ensure guest-01's root volume is on rbd-prod",
+      "run": "vmid=$(cmk list virtualmachines name=guest-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"virtualmachine\"][0][\"id\"])') && vol=$(cmk list volumes virtualmachineid=\"$vmid\" type=ROOT | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"volume\"][0][\"id\"])') && prod=$(cmk list storagepools name=rbd-prod | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"storagepool\"][0][\"id\"])') && cmk stop virtualmachine id=\"$vmid\" >/dev/null && cmk migrate volume volumeid=\"$vol\" storageid=\"$prod\" >/dev/null && cmk start virtualmachine id=\"$vmid\" >/dev/null && echo GUEST-ON-RBD-PROD",
+      "mutates": true,
+      "already": "vmid=$(cmk list virtualmachines name=guest-01 | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"virtualmachine\"][0][\"id\"])') && cmk list volumes virtualmachineid=\"$vmid\" type=ROOT | python3 -c 'import sys,json;v=json.load(sys.stdin)[\"volume\"][0];print(\"YES\" if v.get(\"storage\")==\"rbd-prod\" else \"NO\")' | grep -q YES"
+    }
+  ],
+  "checks": [
+    {
+      "id": "guest-net-exists",
+      "title": "Guest network man-guest-01 present",
+      "run": "cmk list networks name=man-guest-01 | grep -q '\"name\": \"man-guest-01\"' && echo GUEST-NET-OK",
+      "expect_output": "GUEST-NET-OK"
+    },
+    {
+      "id": "guest-net-cidr",
+      "title": "Guest network CIDR is 10.10.0.0/24",
+      "run": "cmk list networks name=man-guest-01 | python3 -c 'import sys,json;d=sys.stdin.read();n=(json.loads(d)[\"network\"][0] if d.strip() else {});print(\"GUEST-NET-CIDR-OK\" if n.get(\"cidr\")==\"10.10.0.0/24\" else \"cidr=\"+str(n.get(\"cidr\")))'",
+      "expect_output": "GUEST-NET-CIDR-OK"
+    },
+    {
+      "id": "guest-running",
+      "title": "Guest guest-01 is Running",
+      "run": "cmk list virtualmachines name=guest-01 | python3 -c 'import sys,json;d=sys.stdin.read();v=(json.loads(d)[\"virtualmachine\"][0] if d.strip() else {});print(\"GUEST-RUNNING-OK\" if v.get(\"state\")==\"Running\" else \"state=\"+str(v.get(\"state\")))'",
+      "expect_output": "GUEST-RUNNING-OK"
+    },
+    {
+      "id": "guest-on-network",
+      "title": "Guest guest-01 is on man-guest-01",
+      "run": "cmk list virtualmachines name=guest-01 | python3 -c 'import sys,json;d=sys.stdin.read();v=(json.loads(d)[\"virtualmachine\"][0] if d.strip() else {});nics=v.get(\"nic\") or [];print(\"GUEST-ON-NET-OK\" if any(x.get(\"networkname\")==\"man-guest-01\" for x in nics) else \"not-on-net\")'",
+      "expect_output": "GUEST-ON-NET-OK"
+    },
+    {
+      "id": "guest-at-small-offering",
+      "title": "Guest guest-01 at Small Instance offering",
+      "run": "cmk list virtualmachines name=guest-01 | python3 -c 'import sys,json;d=sys.stdin.read();v=(json.loads(d)[\"virtualmachine\"][0] if d.strip() else {});print(\"GUEST-OFFERING-OK\" if v.get(\"serviceofferingname\")==\"Small Instance\" else \"offering=\"+str(v.get(\"serviceofferingname\")))'",
+      "expect_output": "GUEST-OFFERING-OK"
+    },
+    {
+      "id": "guest-volume-on-rbd-prod",
+      "title": "Guest guest-01 root volume Ready on rbd-prod",
+      "run": "vmid=$(cmk list virtualmachines name=guest-01 | python3 -c 'import sys,json;d=sys.stdin.read();v=json.loads(d).get(\"virtualmachine\",[]) if d.strip() else [];print(v[0][\"id\"] if v else \"\")') && cmk list volumes virtualmachineid=\"$vmid\" type=ROOT | python3 -c 'import sys,json;d=sys.stdin.read();v=(json.loads(d)[\"volume\"][0] if d.strip() else {});print(\"GUEST-VOL-RBD-PROD-OK\" if v.get(\"storage\")==\"rbd-prod\" and v.get(\"state\")==\"Ready\" else \"vol-on-\"+str(v.get(\"storage\")))'",
+      "expect_output": "GUEST-VOL-RBD-PROD-OK"
+    }
+  ]
+}

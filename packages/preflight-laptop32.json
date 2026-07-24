@@ -1,0 +1,99 @@
+{
+  "name": "preflight-laptop32",
+  "title": "Preflight: can this machine host the 32 GB lab?",
+  "description": "Read-only checks that this machine can host the book's seven-VM CloudStack lab on the 32 GB profile. Changes nothing. Run this before you spend a weekend on the build.",
+  "profile": "laptop32",
+  "source": "Derived from the MatrixClaw lab's own acceptance suite and the laptop32 sizing profile, both exercised on a real 32 GB build on 20-21 July 2026. Checkpoints cp01 (nested virtualisation) and cp02 (platform) correspond to checks below.",
+  "honesty": "Every check here has an exact-match marker rather than a bare number, so it cannot pass on the text of its own error message. Checks that do not apply to this machine are recorded as skipped, never as passed.",
+  "checks": [
+    {
+      "id": "host-is-linux",
+      "title": "The lab host runs Linux",
+      "why": "The build uses KVM, libvirt and cgroups directly. macOS and Windows cannot host it, though either can be the machine you sit at while it runs elsewhere.",
+      "run": "test \"$(uname -s)\" = Linux && echo LINUX-OK || { echo \"NOT-LINUX: $(uname -s)\"; exit 1; }",
+      "expect_output": "LINUX-OK",
+      "advice": "The lab needs a Linux host. Options, in the order most readers take them: install Ubuntu 24.04 on the machine; run Ubuntu on a spare drive or a second partition; or use a Linux server elsewhere and treat this machine as the terminal you drive it from. A virtual machine on macOS or Windows is not sufficient, because the lab itself nests virtual machines and needs the hardware extensions directly."
+    },
+    {
+      "id": "cpu-virtualisation",
+      "title": "The processor supports hardware virtualisation",
+      "why": "Without vmx (Intel) or svm (AMD) the lab's virtual machines cannot start at all.",
+      "applies_to": [
+        "Linux"
+      ],
+      "run": "grep -qE '(vmx|svm)' /proc/cpuinfo && echo VIRT-OK || { echo VIRT-MISSING; exit 1; }",
+      "expect_output": "VIRT-OK",
+      "advice": "Hardware virtualisation is usually present but switched off in firmware. Reboot into the BIOS or UEFI settings and enable Intel VT-x or AMD-V. On some laptops it sits under a Security or Advanced menu rather than an obvious one."
+    },
+    {
+      "id": "nested-virtualisation",
+      "title": "Nested virtualisation is enabled",
+      "why": "The lab runs KVM inside KVM: the compute hosts are themselves virtual machines. This is checkpoint cp01 of the lab's acceptance suite.",
+      "applies_to": [
+        "Linux"
+      ],
+      "run": "cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null | grep -qE '^(Y|1)$' && echo NESTED-OK || { echo NESTED-OFF; exit 1; }",
+      "expect_output": "NESTED-OK",
+      "advice": "Enable nested virtualisation for your CPU vendor and make it persist across reboots. Intel: echo 'options kvm_intel nested=1' | sudo tee /etc/modprobe.d/kvm-nested.conf. AMD: the same with kvm_amd. Then reload the module or reboot. Without this the compute hosts will appear to build and then fail to run guests, which is a slow and confusing way to discover the problem."
+    },
+    {
+      "id": "kvm-device",
+      "title": "/dev/kvm exists and is usable by you",
+      "why": "libvirt needs this device node, and needs your account to be allowed to open it.",
+      "applies_to": [
+        "Linux"
+      ],
+      "run": "test -r /dev/kvm && test -w /dev/kvm && echo KVM-DEV-OK || { echo \"KVM-DEV-PROBLEM: $(ls -l /dev/kvm 2>&1)\"; exit 1; }",
+      "expect_output": "KVM-DEV-OK",
+      "advice": "If the device is missing, the kvm module is not loaded (sudo modprobe kvm_intel or kvm_amd). If it exists but is not writable by you, add yourself to the kvm group with sudo usermod -aG kvm $USER and then log out and back in - a new shell alone will not pick up the group."
+    },
+    {
+      "id": "memory-for-profile",
+      "title": "There is enough memory for the 32 GB profile",
+      "why": "The laptop32 profile allocates roughly 29 GB across seven virtual machines, which needs a 32 GB machine with little else running.",
+      "applies_to": [
+        "Linux"
+      ],
+      "run": "awk '/^MemTotal:/ {kb=$2} END {if (kb >= 30000000) print \"RAM-OK\", kb; else print \"RAM-LOW\", kb}' /proc/meminfo",
+      "expect_output": "RAM-OK",
+      "advice": "The seven-VM estate needs about 29 GB allocated, so a 32 GB machine is the smallest the book supports and there is not much headroom. Close what you can before building. On a 16 GB machine the full estate will not fit; the book's own guidance is that 32 GB demonstrates the platform and 64 GB teaches it."
+    },
+    {
+      "id": "disk-space",
+      "title": "There is enough free disk for the estate",
+      "why": "Seven virtual machine images, the Ceph OSDs and the cloud image need roughly 200 GB free.",
+      "applies_to": [
+        "Linux"
+      ],
+      "run": "avail=$(df -Pk /var/lib/libvirt 2>/dev/null || df -Pk /) ; kb=$(echo \"$avail\" | awk 'NR==2 {print $4}') ; if [ \"$kb\" -ge 200000000 ]; then echo DISK-OK $kb; else echo DISK-LOW $kb; fi",
+      "expect_output": "DISK-OK",
+      "advice": "Free up space, or point libvirt's storage at a larger disk before building. External USB storage works and the book's Appendix B covers it, but prefer SSD over spinning disk - the Ceph OSDs are unpleasant on anything slow."
+    },
+    {
+      "id": "libvirt-present",
+      "title": "libvirt is installed and running",
+      "why": "Every virtual machine in the estate is created and managed through libvirt.",
+      "applies_to": [
+        "Linux"
+      ],
+      "run": "command -v virsh >/dev/null 2>&1 && virsh --connect qemu:///system version >/dev/null 2>&1 && echo LIBVIRT-OK || { echo LIBVIRT-PROBLEM; exit 1; }",
+      "expect_output": "LIBVIRT-OK",
+      "advice": "Install the stack with sudo apt install qemu-kvm libvirt-daemon-system virtinst, then make sure the service is running. Note the explicit qemu:///system in the check: a bare virsh in a non-interactive shell defaults to qemu:///session and will appear to work while managing a completely different, empty set of machines. That exact trap cost the lab a build attempt.",
+      "advisory": true,
+      "satisfied_by": "package 01-platform-host"
+    },
+    {
+      "id": "virt-install-present",
+      "title": "virt-install is available",
+      "why": "The estate's virtual machines are created from the Ubuntu cloud image with virt-install.",
+      "applies_to": [
+        "Linux"
+      ],
+      "run": "command -v virt-install >/dev/null 2>&1 && echo VIRTINSTALL-OK || { echo VIRTINSTALL-MISSING; exit 1; }",
+      "expect_output": "VIRTINSTALL-OK",
+      "advice": "sudo apt install virtinst. It is a separate package from the libvirt daemon on Ubuntu, so it is easy to have one without the other.",
+      "advisory": true,
+      "satisfied_by": "package 01-platform-host"
+    }
+  ]
+}
