@@ -67,7 +67,7 @@ def check_markua(text, expect_chapter_heading=True):
 def _status_word(status):
     return {"passed": "PASSED", "failed": "DID NOT PASS", "error": "COULD NOT COMPLETE",
             "not-applicable": "DID NOT APPLY",
-            "pending": "READY - PREREQUISITES NOT INSTALLED YET"}.get(status, status.upper())
+            "pending": "READY - WITH ADVISORIES"}.get(status, status.upper())
 
 
 def render(record, advice, heading_offset=0):
@@ -115,7 +115,7 @@ def render(record, advice, heading_offset=0):
     out.append("| Plan digest | `%s` |" % (approval.get("plan_digest") or "-"))
     out.append("")
 
-    out.append("Results: **%d passed**, %d did not pass, %d not yet installed, "
+    out.append("Results: **%d passed**, %d did not pass, %d advisory, "
                "%d skipped, %d could not run."
                % (counts["pass"], counts["fail"], counts.get("pending", 0),
                   counts["skipped"], counts["error"]))

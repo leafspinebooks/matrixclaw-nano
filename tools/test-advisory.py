@@ -68,17 +68,29 @@ def test_shipped_preflight():
 
     pkg = packages.load("preflight-laptop32")
     by_id = {c["id"]: c for c in pkg["checks"]}
-    check("preflight still has eight checks", len(pkg["checks"]) == 8,
+    check("preflight has nine checks", len(pkg["checks"]) == 9,
           "found %d" % len(pkg["checks"]))
 
     advisory = sorted(c["id"] for c in pkg["checks"] if c.get("advisory"))
-    check("exactly the two toolchain checks are advisory",
-          advisory == ["libvirt-present", "virt-install-present"], str(advisory))
+    check("exactly the three advisory checks are advisory",
+          advisory == ["graphical-session", "libvirt-present",
+                       "virt-install-present"], str(advisory))
 
-    for cid in advisory:
+    for cid in ("libvirt-present", "virt-install-present"):
         check("%s names package 01 as what satisfies it" % cid,
               "01" in by_id[cid].get("satisfied_by", ""),
               by_id[cid].get("satisfied_by"))
+
+    # The desktop warning is advisory for a DIFFERENT reason than the other two, and
+    # must not borrow their wording: a reader who installed a desktop deliberately is
+    # not waiting for a package to be installed.
+    g = by_id["graphical-session"]
+    check("the desktop check carries its own wording",
+          bool(g.get("advisory_detail")))
+    check("...which does not claim something will install it",
+          "installs this" not in (g.get("advisory_detail") or ""))
+    check("...and tells the reader how to free the memory",
+          "multi-user.target" in (g.get("advisory_detail") or ""))
 
     hardware = [c["id"] for c in pkg["checks"] if not c.get("advisory")]
     check("the six hardware checks are NOT advisory", len(hardware) == 6, str(hardware))
@@ -101,6 +113,8 @@ def test_runner_and_report():
         os.path.abspath(__file__))), "nano", "runner.py"), encoding="utf-8").read()
     check("a failing advisory check becomes 'pending', not 'fail'",
           'status = "pending"' in src and 'check.get("advisory")' in src)
+    check("per-check advisory wording is preferred over the default",
+          'check.get("advisory_detail")' in src)
     check("pending is checked BEFORE the passed verdict",
           src.index('counts.get("pending")') < src.index('return "passed"'))
     check("pending does not short-circuit a real failure",
@@ -109,16 +123,20 @@ def test_runner_and_report():
     cli = open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "nano", "cli.py"), encoding="utf-8").read()
     check("the CLI summary counts pending, so the totals add up",
-          "not installed yet" in cli)
+          '", %d advisory"' in cli)
+    # The summary must not describe every advisory as a missing package: one of them
+    # is a desktop session that is very much installed.
+    check("the summary does not call every advisory 'not installed yet'",
+          "not installed yet" not in cli)
     check("pending gets its own exit code, not borrowed from failure",
           'return 4 if status == "pending" else 1' in cli)
 
     rep = open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "nano", "report.py"), encoding="utf-8").read()
     check("the report has its own wording for pending",
-          "PREREQUISITES NOT INSTALLED YET" in rep)
+          "READY - WITH ADVISORIES" in rep)
     check("the report's results line counts pending too",
-          "not yet installed" in rep)
+          "%d advisory" in rep)
 
 
 def main():

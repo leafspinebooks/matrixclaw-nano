@@ -97,6 +97,29 @@ The published packages had the author's own key and account name stripped out be
 release. Nano refuses to plan package 03 until you supply yours, rather than building
 seven machines around a placeholder.
 
+## Root, and what Nano never asks for
+
+Building a lab needs root for a good deal of it. Nano runs **on the machine you are
+building, in your terminal, as you** - and when a step needs root it runs `sudo`,
+which asks you directly, in that terminal.
+
+Nano never sees, stores or transmits your password. It has nowhere to put one, and it
+makes no network calls at all. Expect `sudo` to ask more than once during a long
+phase: it forgets after a few minutes, which is `sudo` behaving normally.
+
+**Do not grant your account passwordless root to make this smoother.** Nano never
+prompts for a password on a connection it opens, so driving it remotely over SSH fails
+at once with `sudo: a terminal is required to read the password`. The answer to that is
+to run Nano where you are sitting - not to weaken your machine. On a work machine that
+change is one a security team or a compliance auditor should refuse, and reading a book
+is not a reason to make it.
+
+The seven virtual machines are deliberately different: package 03 builds them from a
+cloud image with a lab account, key authentication and passwordless `sudo`, and that is
+what Nano's SSH transport talks to. They are disposable machines on a private network,
+created minutes earlier and destroyed routinely - not your workstation, and not your
+account.
+
 ## Where things run
 
 Run Nano **on the platform host**. Phases 01 to 03 build that host, its networks and

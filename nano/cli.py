@@ -161,7 +161,7 @@ def cmd_run(args):
     summary = "  %d passed, %d did not pass, %d skipped, %d could not run" % (
         counts["pass"], counts["fail"], counts["skipped"], counts["error"])
     if counts.get("pending"):
-        summary += ", %d not installed yet" % counts["pending"]
+        summary += ", %d advisory" % counts["pending"]
     if counts.get("already"):
         summary += ", %d already done" % counts["already"]
     _p(summary + ".  (%d command(s) in total)" % sum(counts.values()))

@@ -79,18 +79,33 @@ they are the ones you cannot fix by running the build:
 | `RAM-OK` | there is enough memory (30 GiB floor) |
 | `DISK-OK` | there is enough free disk (200 GB floor) |
 
-The other two check for software the build itself installs, so on a **fresh Ubuntu
-Server they are expected to be missing.** Nano reports them as `PEND` rather than as a
-failure, because a tool that has not been installed yet is not a fault in your machine:
+The other three are **advisory**. Nano reports them as `PEND` rather than as failures,
+because none of them is a fault in your machine:
 
 | Marker | Means |
 |---|---|
 | `LIBVIRT-OK` | libvirt is installed and running -- package 01 installs it |
 | `VIRTINSTALL-OK` | `virt-install` is available -- package 01 installs it |
+| `NO-DESKTOP-OK` | no graphical desktop session is competing for memory |
 
-So a good first run on a clean machine looks like **six passed and two pending**, and
-`mcnano` exits with code 4, meaning "this machine is ready, but something the build
-installs is not there yet". Run preflight again after package 01 and all eight pass.
+The first two look for software the build itself installs, so on a fresh machine they
+are *expected* to be missing. Run preflight again after package 01 and they pass.
+
+The third is a note about memory rather than a missing tool. The estate allocates
+about 29 GiB, and on a 32 GB machine that leaves little spare, so a desktop session
+shares what is left. **This is not a prediction of failure** -- the lab this tool was
+validated on also ran a desktop session and completed. It is here so that you know
+where the memory went if something does go wrong: if a package dies part-way with a
+process killed for no visible reason, check `dmesg | grep -i oom`. To free the memory
+anyway, without reinstalling anything:
+
+```
+sudo systemctl isolate multi-user.target
+```
+
+So a good first run on a clean machine looks like **six passed and two or three
+advisory**, reported as `READY - WITH ADVISORIES`, with `mcnano` exiting code 4. Six
+passed is the part that matters: it means the machine can host the lab.
 
 If any of the first six fails, stop and fix that before going further. `VIRT-OK` or
 `NESTED-OK` failing usually means virtualisation is switched off in your BIOS or UEFI
@@ -119,6 +134,46 @@ python3 bin/mcnano packages
 `packages` lists every package Nano can run. Nano runs on your lab host -- the physical
 machine the estate stands on -- and reaches the seven VMs over SSH on the management
 network (10.100.99.0/24, the book's fixed address plan).
+
+## Root, passwords, and what Nano never asks for
+
+Building a lab means installing packages, creating networks and writing to system
+directories, so parts of this build need root. It is worth being precise about where
+that happens, because the answer is the difference between a tool you can run at work
+and one you cannot.
+
+**Run Nano in a terminal, on the machine you are building.** That is the whole model:
+Nano runs where you are sitting. When a step needs root it runs `sudo`, and `sudo`
+asks *you*, in your own terminal, exactly as it would if you had typed the command
+yourself. Around sixty of the build's commands are of this kind, spread across the
+platform-host, storage and management phases.
+
+**Nano never sees, stores, or transmits your password.** It does not read it, it has
+nowhere to put it, and it makes no network calls at all. `sudo` handles the whole
+exchange with you directly.
+
+Expect to be asked more than once. `sudo` remembers your password for a few minutes
+and then forgets it, so a long phase may ask again part-way through. That is `sudo`
+working normally, not Nano repeating itself.
+
+### Do not grant passwordless sudo to make this smoother
+
+You may be tempted, especially if you want to drive Nano from another machine over
+SSH -- Nano never prompts for a password on a connection it opens, so a remote,
+non-interactive run fails immediately with `sudo: a terminal is required to read the
+password`.
+
+**Do not solve that by giving your account passwordless root.** On a personal machine
+it is a poor trade; on a work machine it is the kind of change that a security team or
+a compliance auditor will rightly refuse, and you should not have to make it to read a
+book. Run Nano on the machine you are building, in a terminal, and answer the prompt.
+
+The seven virtual machines are a different matter, and the difference is deliberate.
+Package 03 creates them from a cloud image with a lab account, key authentication and
+passwordless `sudo`, and that is what Nano's SSH transport uses. Those are disposable
+machines you built a few minutes earlier, on a private network, for a lab -- not your
+workstation and not your account. They are meant to be destroyed and rebuilt, and the
+build does exactly that more than once.
 
 ## How Nano runs: the gate
 
@@ -226,6 +281,53 @@ returned to Nano.
 
 Three things about running the build are not in any single package, but the build teaches
 them.
+
+### If your lab host is on wifi, turn off the adapter's power saving
+
+Found on the machine this guide was proved on, and it cost an hour before it was
+understood. A laptop's wireless adapter powers its radio down when idle. The machine
+stays up and stays connected -- but it stops answering anything it did not start
+itself, so it vanishes from the network until it next transmits. Ping *out* from it and
+it reappears immediately, which makes the symptom look like a firewall problem and
+sends you looking in the wrong place.
+
+This matters if you reach your lab host from another machine, or if a long download
+stalls part-way through the build. It is not covered by the desktop's power settings:
+"High Performance" governs the platform, while the radio's power saving lives in the
+wireless driver underneath it. Check with:
+
+```
+iwconfig 2>/dev/null | grep -i "power management"
+```
+
+If it says `Power Management:on`, turn it off -- substituting your own interface name,
+which `ip -br link` will show:
+
+```
+sudo iwconfig wlp0s20f3 power off
+```
+
+That takes effect at once and lasts until reboot. To make it stick, put the same
+command in a small unit that runs at boot:
+
+```
+sudo tee /etc/systemd/system/wifi-powersave-off.service >/dev/null <<'UNIT'
+[Unit]
+Description=Disable wifi power saving for the lab host
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/iwconfig wlp0s20f3 power off
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl enable --now wifi-powersave-off.service
+```
+
+None of this applies to the seven virtual machines. They talk to each other over
+libvirt networks inside the host, where there is no radio involved.
 
 ### After a rebuild: refresh known_hosts
 

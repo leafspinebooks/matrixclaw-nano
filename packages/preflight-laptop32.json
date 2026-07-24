@@ -94,6 +94,17 @@
       "advice": "sudo apt install virtinst. It is a separate package from the libvirt daemon on Ubuntu, so it is easy to have one without the other.",
       "advisory": true,
       "satisfied_by": "package 01-platform-host"
+    },
+    {
+      "id": "graphical-session",
+      "title": "No desktop session sharing the estate's memory",
+      "run": "if systemctl is-active --quiet graphical.target 2>/dev/null; then echo \"DESKTOP-RUNNING MemAvailable=$(awk '/^MemAvailable/{print $2}' /proc/meminfo)kB\"; else echo NO-DESKTOP-OK; fi",
+      "expect_output": "NO-DESKTOP-OK",
+      "why": "The seven virtual machines allocate about 29 GiB. On a 32 GB machine that leaves little spare, and a desktop session shares what is left. This is a note about where the memory goes, not a prediction of failure: the lab this tool was validated on also ran a desktop session, and completed.",
+      "advisory": true,
+      "satisfied_by": "stopping the graphical session",
+      "advisory_detail": "a desktop session is running. It shares the memory the estate needs - about 29 GiB of it - so there is less headroom than the totals suggest. Installing a desktop is a reasonable thing to have done and the build is not expected to fail because of it; to free the memory anyway, drop to a text console with: sudo systemctl isolate multi-user.target",
+      "advice": "Nothing to do unless something goes wrong. If a package dies part-way with a process killed for no visible reason, check `dmesg | grep -i oom` - and if that is what happened, free this memory and re-run the package. Steps are idempotent, so a re-run skips what already landed."
     }
   ]
 }

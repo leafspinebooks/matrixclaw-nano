@@ -187,7 +187,12 @@ def run_package(items, record, on_result=None):
         # passes. What it does not do is decide the verdict.
         if status == "fail" and check.get("advisory"):
             status = "pending"
-            detail = "not yet: %s installs this." % check["satisfied_by"]
+            # Per-check wording, because "not installed yet" is only one reason a check
+            # can be advisory. A desktop session competing for the estate's memory is a
+            # different fact, and reporting it in the language of a missing package
+            # would be the sort of nearly-right that teaches a reader to skim.
+            detail = check.get("advisory_detail") or (
+                "not yet: %s installs this." % check["satisfied_by"])
         record.add_check(check["id"], check.get("title", check["id"]),
                          status, rc, tail, detail, host=target.name)
         if on_result:
