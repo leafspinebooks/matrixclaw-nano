@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# The reader's FILLED-IN secrets template must never be committed or published.
+# Only the .example ships. This is belt-and-braces: the export allowlist would
+# exclude it anyway (it names only mc-secrets.env.example).
+mc-secrets.env

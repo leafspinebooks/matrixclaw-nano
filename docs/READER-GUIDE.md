@@ -232,29 +232,54 @@ working default taken from the book's own lab profile.
 
 ### Placing your secrets
 
-Some packages need secrets -- database passwords, the compute hosts' root password, the
-Ceph key. Nano never holds these. They live in a root-only file, `/root/.mc-secrets.env`,
-on the host that needs them, and Nano's steps read them there, over SSH, on the far side
-of the connection. A secret never enters a package, a plan, or a record.
+Some packages need secrets -- two database passwords and a root password for the
+compute hosts. Nano never holds these. They live in a root-only file,
+`/root/.mc-secrets.env`, on the host that needs them, and Nano's steps read them there,
+over SSH, on the far side of the connection. **A secret never enters a package, a plan,
+a record, or Nano itself** -- which is deliberate, and is why placing them is a separate
+step you run, not something Nano does for you.
 
-Placing them is your job, and the timing matters. The VMs are rebuilt from a fresh image
-by package 03, so any secrets you placed earlier are gone with the old disks. Place them
-**after package 03 and before packages 07, 08, 09, and 10**:
+The timing matters. The VMs are rebuilt from a fresh image by package 03, so any secrets
+you placed earlier are gone with the old disks. Place them **after package 03 and before
+packages 07, 08, 09, and 10** -- which is to say, now.
 
-| Host | Variables | Needed by |
-|---|---|---|
-| mgmt-01 (10.100.99.11) | `MC_MYSQL_ROOT_PASS`, `MC_DB_PASS` | package 07 |
-| mgmt-01 (10.100.99.11) | `MC_HOST_ROOTPASS`, `MC_RBD_SECRET` | package 10 |
-| kvm-01, kvm-02 (.31, .32) | `MC_KVM_ROOT_PASS` (same on both) | packages 08, 09 |
+**The easy way.** Nano ships a small helper that places all of them from one file. Copy
+the template, fill in three passwords, and run it:
+
+```
+cp mc-secrets.env.example mc-secrets.env
+nano mc-secrets.env          # fill in the three passwords, save
+bin/mc-place-secrets
+```
+
+You choose three passwords: the MySQL root password, the CloudStack database password,
+and one root password for the compute hosts. You do **not** supply the Ceph storage key
+-- the helper reads it for you from the cluster you built in package 05. It shows you
+which files it will write, on which hosts, and asks before it does anything; it never
+prints a value. When it reports all three verified, delete `mc-secrets.env` so the
+passwords do not linger on your disk.
+
+The helper is not part of Nano's gated engine and keeps no record. It reaches the hosts
+the same way Nano does, over SSH, and puts each value straight into the root-only file
+on the far side.
+
+**By hand, if you prefer.** The helper does nothing you could not do yourself. Each host
+needs `/root/.mc-secrets.env`, mode 600, containing `NAME=value` lines:
+
+| Host | Variables |
+|---|---|
+| mgmt-01 (10.100.99.11) | `MC_MYSQL_ROOT_PASS`, `MC_DB_PASS`, `MC_HOST_ROOTPASS`, `MC_RBD_SECRET` |
+| kvm-01, kvm-02 (.31, .32) | `MC_KVM_ROOT_PASS` |
 
 `MC_HOST_ROOTPASS` on mgmt-01 must equal `MC_KVM_ROOT_PASS` on the compute hosts: it is
-the password package 10 uses to add each compute host, and it is the password packages
-08 and 09 set on those hosts. `MC_RBD_SECRET` is the `client.cloudstack` Ceph key, which
-you can read on a Ceph node with `ceph auth get-key client.cloudstack`.
+the password package 10 uses to add each compute host, and the password packages 08 and
+09 set on those hosts. (The helper takes one value for both, so it cannot be got wrong.)
+`MC_RBD_SECRET` is the `client.cloudstack` Ceph key, readable on a Ceph node with
+`sudo cephadm shell -- ceph auth get-key client.cloudstack`.
 
-If a secret is missing, the package that needs it fails fast at its first step, before it
-changes anything -- it tells you the file exists and yields the variable, not merely that
-a file is present.
+Either way, if a secret is missing the package that needs it fails fast at its first
+step, before it changes anything -- it tells you the file exists and yields the variable,
+not merely that a file is present.
 
 ### Packages 01 to 11
 

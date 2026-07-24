@@ -7,9 +7,7 @@
   "description": "Take the physical lab host from bare Ubuntu 24.04 + SSH to the platform the seven-VM estate stands on: nested virtualisation enabled and gated fail-fast, sysctl tuning, the KVM/libvirt/cloud-image toolchain, the lab ed25519 keypair, the lab and iso storage pools, the noble cloud image fetched, and the estate snapshot/revert scripts installed.",
   "source": "Generated from runbooks/lab/lab-host.yaml in the MatrixClaw lab repository. That runbook built this phase of the real 32 GB estate on 20-21 July 2026; the run records hold every command's exit code and output.",
   "honesty": "Steps change this machine and are gated. Each carries an 'already' probe, so a re-run skips what is done rather than repeating it. Checks are read-only and carry exact-match markers so they cannot pass on their own error text.",
-  "variables": {
-    "lab_user": "labadmin"
-  },
+  "variables": {},
   "steps": [
     {
       "id": "nested-virt-enable",
@@ -35,28 +33,28 @@
     {
       "id": "kvm-libvirt-stack",
       "title": "Kvm libvirt stack",
-      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils libguestfs-tools cloud-image-utils chrony && sudo systemctl enable --now chrony && sudo usermod -aG libvirt,kvm {{lab_user}}",
+      "run": "sudo DEBIAN_FRONTEND=noninteractive apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q qemu-kvm libvirt-daemon-system libvirt-clients virtinst qemu-utils libguestfs-tools cloud-image-utils chrony && sudo systemctl enable --now chrony && sudo usermod -aG libvirt,kvm $USER",
       "mutates": true,
-      "already": "dpkg -s virtinst 2>/dev/null | grep -q ok.installed && dpkg -s cloud-image-utils 2>/dev/null | grep -q ok.installed && id -nG {{lab_user}} | grep -qw libvirt && id -nG {{lab_user}} | grep -qw kvm"
+      "already": "dpkg -s virtinst 2>/dev/null | grep -q ok.installed && dpkg -s cloud-image-utils 2>/dev/null | grep -q ok.installed && id -nG $USER | grep -qw libvirt && id -nG $USER | grep -qw kvm"
     },
     {
       "id": "lab-ssh-keypair",
       "title": "Lab ssh keypair",
-      "run": "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -C '{{lab_user}}@lab-host' && echo LAB-KEY-CREATED",
+      "run": "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -C \"$USER@lab-host\" && echo LAB-KEY-CREATED",
       "mutates": true,
       "already": "test -f ~/.ssh/id_ed25519.pub"
     },
     {
       "id": "storage-pools",
       "title": "Storage pools",
-      "run": "sudo mkdir -p /data/lab /data/iso\nsudo chown {{lab_user}}: /data/lab /data/iso\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nfor p in lab iso; do\n  virsh pool-define-as $p dir --target /data/$p\n  virsh pool-build $p\n  virsh pool-start $p\n  virsh pool-autostart $p\ndone\nvirsh pool-list",
+      "run": "sudo mkdir -p /data/lab /data/iso\nsudo chown $USER: /data/lab /data/iso\nsg libvirt -c '\nexport LIBVIRT_DEFAULT_URI=qemu:///system\nfor p in lab iso; do\n  virsh pool-define-as $p dir --target /data/$p\n  virsh pool-build $p\n  virsh pool-start $p\n  virsh pool-autostart $p\ndone\nvirsh pool-list'",
       "mutates": true,
-      "already": "export LIBVIRT_DEFAULT_URI=qemu:///system; virsh pool-list | grep -q 'lab .*active' && virsh pool-list | grep -q 'iso .*active'"
+      "already": "sg libvirt -c \"export LIBVIRT_DEFAULT_URI=qemu:///system; virsh pool-list | grep -q 'lab .*active' && virsh pool-list | grep -q 'iso .*active'\""
     },
     {
       "id": "fetch-cloud-image",
       "title": "Fetch cloud image",
-      "run": "sudo chown {{lab_user}}: /data/lab /data/iso && cd /data/iso && wget -c https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img && qemu-img info noble-server-cloudimg-amd64.img",
+      "run": "sudo chown $USER: /data/lab /data/iso && cd /data/iso && wget -c https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img && qemu-img info noble-server-cloudimg-amd64.img",
       "mutates": true,
       "already": "test -f /data/iso/noble-server-cloudimg-amd64.img"
     },
